@@ -38,7 +38,7 @@ serde_json = { version = "1.0.128" }
 git2 = { version = "0.19.0", default-features = false, features = ["vendored-libgit2"] }
 
 # Full-text search
-tantivy = { version = "0.22.0" }
+tantivy = { version = "0.26.2" }
 
 # Error handling
 anyhow = { version = "1.0.89" }
