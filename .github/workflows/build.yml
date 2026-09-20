@@ -5,23 +5,23 @@ name: build
 # workflow artifacts; on a version tag (v*) we also create a GitHub Release and
 # attach the installers to it.
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
+#  push:
+#    branches: [main]
+#    tags: ["v*"]
     # Doc-only changes shouldn't trigger a full 3-OS build. (Tag pushes below
     # are unaffected — a release always builds regardless of what changed.)
-    paths-ignore:
-      - "**.md"
-      - "LICENSE"
-      - ".kiro/**"
-      - ".gitignore"
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "LICENSE"
-      - ".kiro/**"
-      - ".gitignore"
+#    paths-ignore:
+#      - "**.md"
+#      - "LICENSE"
+#      - ".kiro/**"
+#      - ".gitignore"
+#  pull_request:
+#    branches: [main]
+#    paths-ignore:
+#      - "**.md"
+#      - "LICENSE"
+#      - ".kiro/**"
+#      - ".gitignore"
   workflow_dispatch:
 
 # Allow the release job to create releases / upload assets.
