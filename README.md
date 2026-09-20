@@ -1,5 +1,7 @@
 # git-atlas
 
+[![build](https://github.com/erosenberg824/git-atlas/actions/workflows/build.yml/badge.svg)](https://github.com/erosenberg824/git-atlas/actions/workflows/build.yml)
+
 A local-first tool for visualising and searching git repositories. Browse commit history as an interactive directed graph, inspect diffs and file contents at any commit, and full-text search across the repository at any point in history.
 
 ## Features
