@@ -31,7 +31,10 @@ ui/src-tauri/gen/
 .DS_Store
 .AppleDouble
 .LSOverride
-Icon?
+# macOS custom-folder-icon file (literally "Icon" + a carriage return).
+# NOTE: do NOT use `Icon?` here — `?` matches any char and, case-insensitively,
+# matches the `icons/` directory, which silently excludes the Tauri app icons.
+Icon[\r]
 ._*
 .Spotlight-V100
 .Trashes
