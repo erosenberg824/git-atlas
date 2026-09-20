@@ -9,6 +9,15 @@ import CommitGraph, {
   stashIndexFromId,
 } from "./features/graph/CommitGraph";
 import TimeScrubber from "./features/graph/TimeScrubber";
+import {
+  branchesFromRefs,
+  defaultVisibility,
+  shownBranchNames,
+  type BranchVisibility,
+} from "./features/graph/branches";
+import BranchControl from "./features/graph/BranchControl";
+import FindRefBox from "./features/graph/FindRefBox";
+import WindowBanner from "./features/graph/WindowBanner";
 import CommitPanel from "./features/commit/CommitPanel";
 import DiffViewer from "./features/diff/DiffViewer";
 import FileBrowser from "./features/tree/FileBrowser";
@@ -38,6 +47,12 @@ export default function App() {
   // = no time filter (show everything within limit).
   const [timeBounds, setTimeBounds] = useState<{ newest: number; oldest: number } | null>(null);
   const [timeWindow, setTimeWindow] = useState<{ since: number; until: number } | null>(null);
+  // Per-branch visibility (Hidden/Collapsed/Expanded). Computed with a smart
+  // default when a repo's refs first load; drives server ref-scoping + rollups.
+  const [branchVis, setBranchVis] = useState<Map<string, BranchVisibility>>(new Map());
+  const [showBranchControl, setShowBranchControl] = useState(false);
+  // Find/jump: the oid the user wants to center/highlight (consumed by CommitGraph).
+  const [jumpToOid, setJumpToOid] = useState<string | null>(null);
 
   const [selectedOid, setSelectedOid] = useState<string | null>(null);
   const [activePanel, setActivePanel] = useState<RightPanel>("commit");
@@ -58,6 +73,7 @@ export default function App() {
       setSelectedFilePath(null);
       setTimeWindow(null);
       setTimeBounds(null);
+      setBranchVis(new Map());
       setRepoPath(target);
       // Refresh the recent list so the just-opened repo moves to the front.
       api.repo.recent().then(setRecentRepos).catch(() => {});
@@ -114,6 +130,53 @@ export default function App() {
       // Non-fatal: a transient failure shouldn't disrupt the current view.
     }
   }, []);
+
+  // Compute the smart default branch visibility once, when a repo's refs first
+  // load and we have no visibility map yet (main/HEAD expanded, ~5 recent
+  // branches collapsed, rest hidden).
+  useEffect(() => {
+    if (!graph || branchVis.size > 0) return;
+    const branches = branchesFromRefs(graph.refs);
+    if (branches.length === 0) return;
+    setBranchVis(defaultVisibility(branches));
+  }, [graph, branchVis.size]);
+
+  // Cycle a branch's visibility: expanded → collapsed → hidden → expanded.
+  const cycleBranch = useCallback((name: string) => {
+    setBranchVis((prev) => {
+      const next = new Map(prev);
+      const cur = next.get(name) ?? "hidden";
+      next.set(
+        name,
+        cur === "expanded" ? "collapsed" : cur === "collapsed" ? "hidden" : "expanded",
+      );
+      return next;
+    });
+  }, []);
+
+  // Re-query the graph scoped to shown branches (collapsed + expanded) when the
+  // visibility changes. Debounced. Skips until a visibility map exists.
+  const branchDebounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => {
+    if (!repoOpen || branchVis.size === 0) return;
+    const shown = shownBranchNames(branchVis);
+    if (branchDebounce.current) clearTimeout(branchDebounce.current);
+    branchDebounce.current = setTimeout(() => {
+      api.graph
+        .get({ limit: 500, refs: shown.length > 0 ? shown : undefined })
+        .then((g) => {
+          setGraph(g);
+          setSelectedOid((prev) =>
+            prev && g.nodes.some((n) => n.oid === prev) ? prev : g.nodes[0]?.oid ?? null,
+          );
+        })
+        .catch(() => {});
+    }, 250);
+    return () => {
+      if (branchDebounce.current) clearTimeout(branchDebounce.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchVis, repoOpen]);
 
   // Load recent repos and auto-open last repo on startup
   useEffect(() => {
@@ -361,7 +424,39 @@ export default function App() {
               onChange={(since, until) => setTimeWindow({ since, until })}
             />
           )}
-          <div className="flex flex-col flex-1 min-w-0">
+          <div className="relative flex flex-col flex-1 min-w-0">
+            {/* Active time-window breadcrumb + orientation + clear */}
+            {timeWindow && timeBounds && (
+              <WindowBanner
+                since={timeWindow.since}
+                until={timeWindow.until}
+                newestTs={timeBounds.newest}
+                commitCount={graph?.nodes.length ?? 0}
+                onClear={() => setTimeWindow(null)}
+              />
+            )}
+            {/* Graph controls overlay: find box + branch control toggle */}
+            {graph && (
+              <div className="absolute top-2 left-2 z-20 flex items-center gap-2">
+                <FindRefBox refs={graph.refs} onJump={(oid) => setJumpToOid(oid)} />
+                <button
+                  onClick={() => setShowBranchControl((s) => !s)}
+                  className="flex items-center gap-1 px-2 py-1 text-xs text-[#8b949e] hover:text-[#e6edf3] border border-[#30363d] hover:border-[#58a6ff]/50 rounded-md bg-[#161b22] transition-colors"
+                  title="Show/hide branches"
+                >
+                  <GitBranch size={12} />
+                  Branches
+                </button>
+              </div>
+            )}
+            {showBranchControl && graph && (
+              <BranchControl
+                branches={branchesFromRefs(graph.refs)}
+                visibility={branchVis}
+                onCycle={cycleBranch}
+                onClose={() => setShowBranchControl(false)}
+              />
+            )}
             {graphLoading ? (
               <div className="flex items-center justify-center h-full text-[#8b949e]">
                 <Loader2 size={20} className="animate-spin mr-2" />
@@ -377,6 +472,9 @@ export default function App() {
                 status={status}
                 selectedOid={selectedOid}
                 onSelectCommit={handleSelectCommit}
+                branchVisibility={branchVis}
+                jumpToOid={jumpToOid}
+                onJumpConsumed={() => setJumpToOid(null)}
               />
             ) : null}
           </div>

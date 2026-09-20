@@ -4,25 +4,33 @@ import {
   Background,
   Controls,
   MiniMap,
+  Panel,
   useNodesState,
   useEdgesState,
   type Node,
   type Edge,
   type NodeTypes,
+  type ReactFlowInstance,
   BackgroundVariant,
   MarkerType,
 } from "@xyflow/react";
-import type { CommitNode, CommitEdge, RefLabel, GraphResponse, StatusSummary } from "../../api/client";
+import type { CommitNode, RefLabel, GraphResponse, StatusSummary } from "../../api/client";
 import CommitNodeComponent from "./CommitNodeComponent";
 import SpecialNodeComponent from "./SpecialNodeComponent";
 import RunNodeComponent from "./RunNodeComponent";
-import { detectRuns, applyCollapse, isCollapsedRunId } from "./collapse";
+import { detectRuns, detectBranchRollups, applyCollapse, isCollapsedRunId } from "./collapse";
 
 interface CommitGraphProps {
   graph: GraphResponse;
   status?: StatusSummary | null;
   selectedOid: string | null;
   onSelectCommit: (oid: string) => void;
+  /** Per-branch visibility; branches marked "collapsed" fold into rollup nodes. */
+  branchVisibility?: Map<string, import("./branches").BranchVisibility>;
+  /** When set, center + select this commit oid (find/jump). */
+  jumpToOid?: string | null;
+  /** Called once a jump has been handled, so the parent can clear it. */
+  onJumpConsumed?: () => void;
 }
 
 /** Synthetic node id for the working-tree (working + staged) pseudo-node. */
@@ -40,54 +48,94 @@ const nodeTypes: NodeTypes = {
 };
 
 /**
- * Assign each commit a column (lane) using a simple topological lane algorithm.
- * Commits are already topologically sorted (newest first) from the server.
+ * Assign each rendered item (commit OR summary/run node) a lane (column).
+ *
+ * Improvements over the old algorithm:
+ *  - **Tight packing**: when a branch ends its lane is reclaimed and the lowest
+ *    free lane is always reused, so total width = max *concurrent* branches, not
+ *    the total number of branches (fixes the graph "fanning out").
+ *  - **Trunk in lane 0**: the first-parent chain from the trunk tip (HEAD) is
+ *    pinned to lane 0, giving a straight mainline on the left.
+ *  - **Summary-node aware**: operates over `order` (the combined render order of
+ *    commit oids and summary/run node ids) using `edges` already rewritten to
+ *    reference those ids, so rollup nodes are first-class.
+ *
+ * `order` is newest-first (topological). `edges` are parent(source)→child(target)
+ * among rendered ids. `trunkTip` is the id that should anchor lane 0.
  */
 function assignLanes(
-  commits: CommitNode[],
-  edges: CommitEdge[]
+  order: string[],
+  edges: { source: string; target: string }[],
+  trunkTip: string | null,
+  firstParentOf: Map<string, string>,
 ): Map<string, number> {
   const lanes = new Map<string, number>();
-  const childToParents = new Map<string, string[]>();
-  const parentToChildren = new Map<string, string[]>();
+  const rendered = new Set(order);
 
+  // child(source=parent) → [children], and child(target) → [parents], rendered-only.
+  const childrenOf = new Map<string, string[]>();
+  const parentsOf = new Map<string, string[]>();
   for (const e of edges) {
-    if (!childToParents.has(e.target)) childToParents.set(e.target, []);
-    childToParents.get(e.target)!.push(e.source);
-    if (!parentToChildren.has(e.source)) parentToChildren.set(e.source, []);
-    parentToChildren.get(e.source)!.push(e.target);
+    if (!rendered.has(e.source) || !rendered.has(e.target)) continue;
+    if (!childrenOf.has(e.source)) childrenOf.set(e.source, []);
+    childrenOf.get(e.source)!.push(e.target);
+    if (!parentsOf.has(e.target)) parentsOf.set(e.target, []);
+    parentsOf.get(e.target)!.push(e.source);
   }
 
+  // Trunk = first-parent chain from the trunk tip; pinned to lane 0.
+  const trunkSet = new Set<string>();
+  if (trunkTip && rendered.has(trunkTip)) {
+    let cur: string | undefined = trunkTip;
+    while (cur && rendered.has(cur) && !trunkSet.has(cur)) {
+      trunkSet.add(cur);
+      cur = firstParentOf.get(cur);
+    }
+  }
+  const hasTrunk = trunkSet.size > 0;
+
+  // activeLanes[i] = id currently occupying lane i (awaiting its parent), or null.
   const activeLanes: (string | null)[] = [];
+  const claimLowestFree = (from: number): number => {
+    for (let i = from; i < activeLanes.length; i++) {
+      if (activeLanes[i] === null) return i;
+    }
+    activeLanes.push(null);
+    return activeLanes.length - 1;
+  };
 
-  for (const commit of commits) {
-    const oid = commit.oid;
-    // Find a lane that this commit can reuse (from one of its children)
+  for (const id of order) {
+    const kids = childrenOf.get(id) ?? [];
     let lane = -1;
-    const children = parentToChildren.get(oid) ?? [];
 
-    for (let i = 0; i < activeLanes.length; i++) {
-      if (activeLanes[i] && children.includes(activeLanes[i]!)) {
-        // Check if this child has already been assigned and this is the first parent
-        const childLane = lanes.get(activeLanes[i]!);
-        if (childLane === i && lane === -1) {
+    if (trunkSet.has(id)) {
+      lane = 0;
+    } else {
+      // Reuse a child's lane ONLY if this commit is that child's FIRST parent
+      // (the mainline continuation). A merge's 2nd+ parents must NOT inherit the
+      // merge's lane — they branch into their own lane. This is what keeps merge
+      // side-branches in a separate column instead of stacking on the trunk.
+      for (let i = 0; i < activeLanes.length; i++) {
+        const occupant = activeLanes[i];
+        if (occupant !== null && kids.includes(occupant) && firstParentOf.get(occupant) === id) {
           lane = i;
-        } else if (lane === -1) {
-          lane = i;
+          break;
         }
+      }
+      if (lane === -1) lane = claimLowestFree(hasTrunk ? 1 : 0);
+    }
+
+    // Reclaim lanes held by this node's OTHER children (merged branches collapse
+    // back), freeing their columns for reuse below this row.
+    for (let i = 0; i < activeLanes.length; i++) {
+      if (i !== lane && activeLanes[i] !== null && kids.includes(activeLanes[i]!)) {
         activeLanes[i] = null;
-        break;
       }
     }
 
-    if (lane === -1) {
-      // Find a free slot or push a new one
-      const free = activeLanes.indexOf(null);
-      lane = free === -1 ? activeLanes.length : free;
-    }
-
-    lanes.set(oid, lane);
-    activeLanes[lane] = oid;
+    lanes.set(id, lane);
+    while (activeLanes.length <= lane) activeLanes.push(null);
+    activeLanes[lane] = id;
   }
 
   return lanes;
@@ -96,7 +144,7 @@ function assignLanes(
 // Node card is ~110px tall at its largest (padding + ref badges + hash/date +
 // summary + author). Keep ROW_HEIGHT comfortably above that so rows never overlap.
 const ROW_HEIGHT = 120;
-const LANE_WIDTH = 240;
+const LANE_WIDTH = 180;
 const X_BASE = 24;
 const Y_BASE = 24;
 
@@ -105,6 +153,9 @@ export default function CommitGraph({
   status,
   selectedOid,
   onSelectCommit,
+  branchVisibility,
+  jumpToOid,
+  onJumpConsumed,
 }: CommitGraphProps) {
   const refsByOid = useMemo(() => {
     const map = new Map<string, RefLabel[]>();
@@ -115,9 +166,13 @@ export default function CommitGraph({
     return map;
   }, [graph.refs]);
 
-  // ── Collapse/expand of long linear runs ─────────────────────────────────
-  // Which run ids the user has explicitly expanded (others fold by default).
+  // ── Collapse/expand of linear runs ───────────────────────────────────────
+  // Manual overrides on top of the auto heuristic:
+  //  - expandedRuns: auto-collapsed runs the user force-expanded.
+  //  - collapsedRuns: runs the user force-collapsed manually (incl. short runs
+  //    below the auto threshold).
   const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
+  const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set());
 
   const nodeByOid = useMemo(() => {
     const m = new Map<string, CommitNode>();
@@ -125,34 +180,100 @@ export default function CommitGraph({
     return m;
   }, [graph.nodes]);
 
+  // Detect ALL foldable linear runs of length >= 2 (so short runs can be
+  // manually collapsed too). Auto-collapse only applies to long ones.
   const runs = useMemo(
-    () => detectRuns(graph.nodes, graph.edges, refsByOid, selectedOid),
+    () => detectRuns(graph.nodes, graph.edges, refsByOid, selectedOid, 2),
     [graph.nodes, graph.edges, refsByOid, selectedOid]
   );
 
-  const collapsed = useMemo(
-    () => applyCollapse(graph.nodes, graph.edges, runs, expandedRuns, nodeByOid),
-    [graph.nodes, graph.edges, runs, expandedRuns, nodeByOid]
+  const AUTO_COLLAPSE_LEN = 8;
+  // A run is rendered collapsed if the user collapsed it, OR it's long enough to
+  // auto-collapse and the user hasn't force-expanded it.
+  const runsToCollapse = useMemo(
+    () =>
+      runs.filter(
+        (r) =>
+          collapsedRuns.has(r.id) ||
+          (r.oids.length >= AUTO_COLLAPSE_LEN && !expandedRuns.has(r.id)),
+      ),
+    [runs, collapsedRuns, expandedRuns]
   );
 
-  // Effective node/edge lists after collapsing — everything downstream (lanes,
-  // positions, flow nodes/edges) operates on these.
-  const effNodes = collapsed.nodes;
+  // Branch "virtual squash" rollups: for each branch marked "collapsed" in
+  // branchVisibility, fold its unique commits (vs. expanded branches) into one
+  // rollup group. Combined with linear runs and fed to applyCollapse together.
+  const branchRollups = useMemo(() => {
+    if (!branchVisibility || branchVisibility.size === 0) return [];
+    const tipByBranch = new Map<string, string>();
+    for (const r of graph.refs) {
+      if (r.kind === "branch" || r.kind === "remotebranch") tipByBranch.set(r.name, r.oid);
+    }
+    const collapsedTips: { name: string; tip: string }[] = [];
+    const expandedTips: string[] = [];
+    for (const [name, vis] of branchVisibility) {
+      const tip = tipByBranch.get(name);
+      if (!tip) continue;
+      if (vis === "collapsed") collapsedTips.push({ name, tip });
+      else if (vis === "expanded") expandedTips.push(tip);
+    }
+    return detectBranchRollups(graph.nodes, graph.edges, collapsedTips, expandedTips);
+  }, [graph.nodes, graph.edges, graph.refs, branchVisibility]);
+
+  const allGroups = useMemo(
+    () => [...branchRollups, ...runsToCollapse],
+    [branchRollups, runsToCollapse]
+  );
+
+  const collapsed = useMemo(
+    () => applyCollapse(graph.nodes, graph.edges, allGroups, new Set<string>(), nodeByOid),
+    [graph.nodes, graph.edges, allGroups, nodeByOid]
+  );
+
+  // Effective edge list + run summary nodes after collapsing — everything
+  // downstream (lanes, positions, flow nodes/edges) operates on these.
   const effEdges = collapsed.edges;
   const runNodes = collapsed.runNodes;
 
   const expandRun = useCallback((id: string) => {
-    setExpandedRuns((prev) => {
+    setExpandedRuns((prev) => new Set(prev).add(id));
+    setCollapsedRuns((prev) => {
+      if (!prev.has(id)) return prev;
       const next = new Set(prev);
-      next.add(id);
+      next.delete(id);
       return next;
     });
   }, []);
 
-  const lanes = useMemo(
-    () => assignLanes(effNodes, effEdges),
-    [effNodes, effEdges]
+  // Collapse the foldable linear run that `oid` belongs to (manual collapse).
+  // Finds the run containing the commit and force-collapses it.
+  const collapseAtCommit = useCallback(
+    (oid: string) => {
+      const run = runs.find((r) => r.oids.includes(oid));
+      if (!run) return;
+      setCollapsedRuns((prev) => new Set(prev).add(run.id));
+      setExpandedRuns((prev) => {
+        if (!prev.has(run.id)) return prev;
+        const next = new Set(prev);
+        next.delete(run.id);
+        return next;
+      });
+    },
+    [runs]
   );
+
+  // Which commits are the head of a foldable run (for showing a collapse control).
+  const runHeadOf = useMemo(() => {
+    const m = new Map<string, string>(); // headOid -> runId
+    for (const r of runs) m.set(r.oids[0], r.id);
+    return m;
+  }, [runs]);
+
+  // The commit HEAD points at — anchors the trunk (lane 0) and the working node.
+  const headOid = useMemo(() => {
+    const head = graph.refs.find((r) => r.is_head);
+    return head?.oid ?? graph.nodes[0]?.oid ?? null;
+  }, [graph.refs, graph.nodes]);
 
   // Combined render order: walk the ORIGINAL graph order; when we hit a commit
   // that folded into a run, emit the run node once (at the position of its
@@ -175,6 +296,29 @@ export default function CommitGraph({
     return order;
   }, [graph.nodes, collapsed.foldedInto]);
 
+  // First-parent map among RENDERED ids (commit oids + summary node ids). Used
+  // by the lane algorithm so a merge's 2nd+ parents branch into their own lane
+  // instead of inheriting the merge's lane. A commit's first parent is
+  // graph parents[0], mapped through any collapse fold to its render id.
+  const firstParentOf = useMemo(() => {
+    const renderId = (oid: string) => collapsed.foldedInto.get(oid) ?? oid;
+    const m = new Map<string, string>();
+    for (const n of graph.nodes) {
+      const self = renderId(n.oid);
+      const fp = n.parents[0];
+      if (!fp) continue;
+      const fpRender = renderId(fp);
+      if (fpRender !== self && !m.has(self)) m.set(self, fpRender);
+    }
+    return m;
+  }, [graph.nodes, collapsed.foldedInto]);
+
+  const lanes = useMemo(
+    () => assignLanes(renderOrder, effEdges, headOid, firstParentOf),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [renderOrder, effEdges, headOid, firstParentOf]
+  );
+
   // Row index of each rendered id (commit oid OR run id).
   const indexByOid = useMemo(() => {
     const m = new Map<string, number>();
@@ -192,22 +336,6 @@ export default function CommitGraph({
     };
   };
 
-  // The commit HEAD points at — the base for the working-tree pseudo-node.
-  const headOid = useMemo(() => {
-    const head = graph.refs.find((r) => r.is_head);
-    return head?.oid ?? graph.nodes[0]?.oid ?? null;
-  }, [graph.refs, graph.nodes]);
-
-  // Lane for a run node: inherit from a neighboring commit (runs are single-lane
-  // by construction). Look at the run's parent/child in the effective edges.
-  const runLane = (runId: string): number => {
-    for (const e of effEdges) {
-      if (e.source === runId && lanes.has(e.target)) return lanes.get(e.target)!;
-      if (e.target === runId && lanes.has(e.source)) return lanes.get(e.source)!;
-    }
-    return 0;
-  };
-
   const flowNodes: Node[] = useMemo(
     () =>
       renderOrder.map((id, index) => {
@@ -218,7 +346,7 @@ export default function CommitGraph({
           return {
             id,
             type: "run",
-            position: { x: X_BASE + runLane(id) * LANE_WIDTH, y },
+            position: { x: X_BASE + (lanes.get(id) ?? 0) * LANE_WIDTH, y },
             data: {
               ...runData,
               selected: id === selectedOid,
@@ -238,12 +366,14 @@ export default function CommitGraph({
             refs: refsByOid.get(id) ?? [],
             selected: id === selectedOid,
             onSelect: onSelectCommit,
+            canCollapse: runHeadOf.has(id),
+            onCollapse: collapseAtCommit,
           },
           selected: id === selectedOid,
         } as Node;
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [renderOrder, lanes, refsByOid, selectedOid, onSelectCommit, runNodes, nodeByOid, effEdges]
+    [renderOrder, lanes, refsByOid, selectedOid, onSelectCommit, runNodes, nodeByOid, effEdges, runHeadOf, collapseAtCommit]
   );
 
   // Working-tree pseudo-node (working + staged) + one node per stash.
@@ -312,9 +442,10 @@ export default function CommitGraph({
         .filter((e) => indexByOid.has(e.source) && indexByOid.has(e.target))
         .map((e) => {
         // source = parent (lower on screen), target = child (higher on screen).
-        // Run nodes aren't in `lanes` (they replace a linear run) — resolve via runLane.
-        const sourceLane = lanes.get(e.source) ?? (isCollapsedRunId(e.source) ? runLane(e.source) : 0);
-        const targetLane = lanes.get(e.target) ?? (isCollapsedRunId(e.target) ? runLane(e.target) : 0);
+        // source = parent (lower on screen), target = child (higher on screen).
+        // `lanes` now covers commits AND summary nodes, so a plain lookup works.
+        const sourceLane = lanes.get(e.source) ?? 0;
+        const targetLane = lanes.get(e.target) ?? 0;
 
         // Same lane → straight vertical: parent emits from its top, child
         // receives at its bottom. Different lanes (branch/merge) → route through
@@ -401,6 +532,25 @@ export default function CommitGraph({
     setEdges(allEdges);
   }, [allNodes, allEdges, setNodes, setEdges]);
 
+  // React Flow instance (captured on init) for imperative centering on jump.
+  const rfRef = React.useRef<ReactFlowInstance | null>(null);
+
+  // Find/jump: when jumpToOid changes, center + select the target commit. The
+  // target may be folded into a rollup/run — center on its render node.
+  useEffect(() => {
+    if (!jumpToOid) return;
+    const renderId = collapsed.foldedInto.get(jumpToOid) ?? jumpToOid;
+    const idx = indexByOid.get(renderId);
+    if (idx !== undefined) {
+      const x = X_BASE + (lanes.get(renderId) ?? 0) * LANE_WIDTH + 90; // ~card center
+      const y = Y_BASE + idx * ROW_HEIGHT + 40;
+      rfRef.current?.setCenter(x, y, { zoom: 1, duration: 400 });
+      if (!isCollapsedRunId(renderId)) onSelectCommit(renderId);
+    }
+    onJumpConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpToOid]);
+
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
       // Clicking a collapsed run expands it; otherwise select the commit.
@@ -413,16 +563,31 @@ export default function CommitGraph({
     [onSelectCommit, expandRun]
   );
 
+  // Jump to the top of the graph (newest commit) — panning a tall graph to the
+  // top by hand is tedious. Centers the first rendered node near the top.
+  const jumpToTop = useCallback(() => {
+    const topId = renderOrder[0];
+    if (!topId) return;
+    const x = X_BASE + (lanes.get(topId) ?? 0) * LANE_WIDTH + 90;
+    const y = Y_BASE + 40;
+    rfRef.current?.setCenter(x, y, { zoom: 0.8, duration: 400 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderOrder, lanes]);
+
   return (
     <div className="w-full h-full">
       <ReactFlow
         nodes={nodes}
         edges={edges}
+        onInit={(inst) => (rfRef.current = inst)}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
         nodeTypes={nodeTypes}
         fitView
+        fitViewOptions={{ padding: 0.15, minZoom: 0.02, maxZoom: 1.2 }}
+        minZoom={0.02}
+        maxZoom={1.5}
         attributionPosition="bottom-right"
         colorMode="dark"
       >
@@ -432,13 +597,28 @@ export default function CommitGraph({
           color="#21262d"
         />
         <Controls />
+        <Panel position="top-right" className="!mt-2 !mr-2">
+          <button
+            onClick={jumpToTop}
+            className="px-2 py-1 text-xs rounded bg-[#161b22] border border-[#30363d] text-[#8b949e] hover:text-[#e6edf3] hover:border-[#58a6ff]/50"
+            title="Jump to the newest commit (top of the graph)"
+          >
+            ↑ Top
+          </button>
+        </Panel>
         <MiniMap
+          pannable
+          zoomable
+          bgColor="#0d1117"
           nodeColor={(node) => {
             if (node.id === WORKING_NODE_ID) return "#34d399";
             if (isStashId(node.id)) return "#fbbf24";
-            return node.selected ? "#58a6ff" : "#30363d";
+            if (isCollapsedRunId(node.id)) return "#a855f7";
+            return node.selected ? "#58a6ff" : "#6e7681";
           }}
-          maskColor="rgba(13,17,23,0.7)"
+          nodeStrokeColor="#30363d"
+          maskColor="rgba(88,166,255,0.10)"
+          className="!bg-[#161b22] !border !border-[#30363d] !rounded"
         />
       </ReactFlow>
     </div>

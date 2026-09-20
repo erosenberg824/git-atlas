@@ -18,7 +18,11 @@ export const COLLAPSE_THRESHOLD = 8;
 /** Synthetic id for a collapsed run summary node. Stable = first..last oid. */
 export const collapsedRunId = (headOid: string, tailOid: string) =>
   `__run__${headOid}__${tailOid}`;
-export const isCollapsedRunId = (id: string) => id.startsWith("__run__");
+export const isCollapsedRunId = (id: string) => id.startsWith("__run__") || id.startsWith("__branch__");
+
+/** Synthetic id for a branch "virtual squash" rollup node. */
+export const branchRollupId = (branch: string) => `__branch__${branch}`;
+export const isBranchRollupId = (id: string) => id.startsWith("__branch__");
 
 export interface CollapsedRunData {
   kind: "run";
@@ -30,12 +34,16 @@ export interface CollapsedRunData {
   lastSummary: string; // oldest commit summary in the run
   newestTs: number;
   oldestTs: number;
+  /** For branch rollups: the branch name being virtually squashed. */
+  label?: string;
 }
 
-/** A detected foldable run (maximal linear chain meeting the heuristic). */
+/** A detected foldable group (linear run OR branch rollup). */
 export interface Run {
   oids: string[]; // newest-first, in graph order
   id: string;
+  /** Optional branch-name label (present for branch rollups). */
+  label?: string;
 }
 
 /**
@@ -146,6 +154,7 @@ export function applyCollapse(
       lastSummary: last.summary,
       newestTs: first.timestamp,
       oldestTs: last.timestamp,
+      label: run.label,
     });
     for (const oid of run.oids) foldedInto.set(oid, run.id);
   }
@@ -170,4 +179,69 @@ export function applyCollapse(
   }
 
   return { nodes: effNodes, edges: effEdges, runNodes, foldedInto };
+}
+
+
+/**
+ * Detect branch "virtual squash" rollups. For each collapsed branch, fold the
+ * commits reachable from its tip but NOT reachable from any expanded anchor
+ * (expanded branch tips / the rest of the shown graph) into a single rollup
+ * group. The result plugs straight into `applyCollapse` (as `Run[]`).
+ *
+ * @param nodes           loaded commit nodes
+ * @param edges           parent(source)→child(target) edges
+ * @param collapsedTips   [branchName, tipOid] for each COLLAPSED branch
+ * @param expandedTips    tip oids of EXPANDED branches (anchors we keep visible)
+ */
+export function detectBranchRollups(
+  nodes: CommitNode[],
+  edges: CommitEdge[],
+  collapsedTips: { name: string; tip: string }[],
+  expandedTips: string[],
+): Run[] {
+  const inGraph = new Set(nodes.map((n) => n.oid));
+  // child(target) → parents(sources), among in-graph commits.
+  const parentsOf = new Map<string, string[]>();
+  for (const e of edges) {
+    if (!inGraph.has(e.source) || !inGraph.has(e.target)) continue;
+    if (!parentsOf.has(e.target)) parentsOf.set(e.target, []);
+    parentsOf.get(e.target)!.push(e.source);
+  }
+
+  // Ancestors (inclusive) of a set of tips, walking first+all parents.
+  const ancestorsOf = (tips: string[]): Set<string> => {
+    const seen = new Set<string>();
+    const stack = [...tips];
+    while (stack.length) {
+      const oid = stack.pop()!;
+      if (!inGraph.has(oid) || seen.has(oid)) continue;
+      seen.add(oid);
+      for (const p of parentsOf.get(oid) ?? []) stack.push(p);
+    }
+    return seen;
+  };
+
+  // Commits kept visible by expanded branches — never fold these.
+  const expandedReach = ancestorsOf(expandedTips);
+
+  // Order lookup (newest-first) so each rollup's oids stay in graph order.
+  const orderIndex = new Map(nodes.map((n, i) => [n.oid, i]));
+
+  const rollups: Run[] = [];
+  // Track commits already claimed by an earlier (more-recent) collapsed branch
+  // so two collapsed branches sharing history don't double-fold.
+  const claimed = new Set<string>();
+
+  for (const { name, tip } of collapsedTips) {
+    if (!inGraph.has(tip)) continue;
+    const branchReach = ancestorsOf([tip]);
+    const unique = [...branchReach].filter(
+      (oid) => !expandedReach.has(oid) && !claimed.has(oid),
+    );
+    if (unique.length === 0) continue;
+    unique.sort((a, b) => (orderIndex.get(a)! - orderIndex.get(b)!)); // newest-first
+    for (const oid of unique) claimed.add(oid);
+    rollups.push({ oids: unique, id: branchRollupId(name), label: name });
+  }
+  return rollups;
 }
