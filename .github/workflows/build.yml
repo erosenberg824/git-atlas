@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up mise (pinned Rust + Node)
         uses: jdx/mise-action@v2
@@ -96,7 +96,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # ── Linux system dependencies for Tauri/WebKitGTK ──────────────────────
       # (macOS and Windows ship the needed webview support.)
