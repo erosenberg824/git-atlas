@@ -7,8 +7,12 @@ A local-first tool for visualising and searching git repositories. Browse commit
 ## Features
 
 - **Commit graph** — interactive DAG with branch/tag labels, powered by React Flow
+- **Live updates** — the graph refreshes automatically as the repo changes (commits, checkouts, fetches, stashes, staging), via a filesystem watcher + WebSocket
+- **Collapse linear runs** — long chains of linear commits fold into a single summary node (click to expand)
+- **Time scrubber** — a vertical time-window control to pan/zoom the graph through history
+- **Working tree, staged & stashes** — view uncommitted, staged, and stashed changes as nodes on the graph (read-only)
 - **Diff viewer** — unified diff for any commit or between any two commits
-- **File browser** — explore the full repository tree at any commit
+- **File browser + viewer** — explore the repository tree at any commit and view file contents
 - **Full-text search** — search file contents at any commit using tantivy
 - **PR overlay** *(planned)* — display open pull requests from Bitbucket, GitHub, or GitLab overlaid on the graph
 
@@ -200,16 +204,23 @@ The server exposes a versioned REST API at `http://localhost:PORT/api/v1/`.
 |--------|------|-------------|
 | `POST` | `/repo` | Open a repository by path |
 | `GET` | `/repo` | Get info about the open repository |
-| `GET` | `/graph` | Commit DAG (nodes + edges + refs) |
+| `GET` | `/repo/recent` | List recently opened repositories |
+| `GET` | `/status` | Working-tree status (staged/unstaged counts + stashes) |
+| `GET` | `/graph` | Commit DAG (nodes + edges + refs); supports `limit`, `start`, `since`, `until` |
+| `GET` | `/timebounds` | Newest/oldest commit timestamps + count (for the time scrubber) |
 | `GET` | `/commits/:oid` | Commit detail |
 | `GET` | `/diff/:oid` | Commit vs parent diff |
 | `GET` | `/diff?base=&target=` | Diff between two commits |
+| `GET` | `/diff/working` | Unstaged changes (index → working tree) |
+| `GET` | `/diff/staged` | Staged changes (HEAD → index) |
+| `GET` | `/diff/stash/:index` | Diff for a stash entry |
 | `GET` | `/tree/:oid` | File tree at a commit |
 | `GET` | `/tree/:oid/blob?path=` | File contents at a commit |
 | `GET` | `/search?q=&commit=` | Full-text search at a commit |
 | `POST` | `/search/index` | Build search index for a commit |
 | `POST` | `/forge/config` | Save forge credentials (OS keychain) |
 | `GET` | `/forge/prs` | List pull requests |
+| `GET` | `/events` | WebSocket — live "repo-changed" events |
 
 ### Server usage
 
@@ -257,28 +268,33 @@ point the Windows Tauri app at the server by setting `ATLAS_PORT=7842` before la
 git-atlas/
 ├── mise.toml                  # Tool versions + dev tasks
 ├── Cargo.toml                 # Workspace root
+├── scripts/                   # prepare-sidecar.sh (build UI + server, stage sidecar)
 ├── server/                    # Rust HTTP server
 │   └── src/
-│       ├── main.rs
+│       ├── main.rs            # CLI (--help/--version), startup, browser open
 │       ├── config.rs
 │       ├── error.rs
-│       ├── state.rs
+│       ├── state.rs           # AppState: repo path, index cache, event broadcast, watcher
+│       ├── static_assets.rs   # Embedded ui/dist (rust-embed) + SPA fallback
+│       ├── watcher.rs         # .git filesystem watcher → live-update events
 │       ├── git/               # git2 operations
-│       │   ├── graph.rs       # DAG traversal
+│       │   ├── graph.rs       # DAG traversal, time bounds
 │       │   ├── commits.rs     # Commit detail
-│       │   ├── diff.rs        # Diff computation
+│       │   ├── diff.rs        # Commit/working/staged/stash diffs + status
 │       │   └── tree.rs        # Tree + blob reading
 │       ├── search/            # tantivy full-text index
 │       ├── forge/             # Bitbucket/GitHub/GitLab clients
-│       └── routes/            # Axum route handlers
+│       └── routes/            # Axum route handlers (incl. /events WebSocket)
 └── ui/                        # Tauri + React frontend
     ├── src/
     │   ├── api/client.ts      # Typed API client
+    │   ├── lib/               # isTauri/picker/drag-drop, live-update hook
     │   └── features/
-    │       ├── graph/         # React Flow commit graph
+    │       ├── graph/         # React Flow graph, collapse, time scrubber, node types
     │       ├── commit/        # Commit detail panel
     │       ├── diff/          # Diff viewer
-    │       ├── tree/          # File browser
+    │       ├── tree/          # File browser + file viewer
+    │       ├── working/       # Working/staged/stash panels
     │       └── search/        # Search panel
-    └── src-tauri/             # Tauri shell (Rust)
+    └── src-tauri/             # Tauri shell (sidecar spawn, logging, dialog)
 ```
