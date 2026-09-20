@@ -26,40 +26,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Linux build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            build-essential \
-            libssl-dev
-
       - name: Set up mise (pinned Rust + Node)
         uses: jdx/mise-action@v2
         with:
           install: true
           cache: true
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      # Rust build cache (smarter than actions/cache for target dirs, incl. the
+      # llvm-cov instrumented build).
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: test-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: test-cargo-
+          # Scope the cache to the server crate's build.
+          workspaces: "server -> target"
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
 
+      # Cover only the server crate (`git-atlas`) — the git/graph logic worth
+      # testing. This deliberately skips the Tauri app crate (`git-atlas-app`),
+      # which would otherwise force compiling the whole GTK/WebKit + wry stack
+      # and require the bundled sidecar binary to exist. (The app crate's logging
+      # tests still run in local `cargo test`.)
       - name: Rust tests with coverage
-        run: cargo llvm-cov --workspace --lcov --output-path lcov-rust.info
+        run: cargo llvm-cov -p git-atlas --lcov --output-path lcov-rust.info
 
       - name: Install frontend deps
         working-directory: ui
