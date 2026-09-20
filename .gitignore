@@ -1,0 +1,60 @@
+# ─── Rust ────────────────────────────────────────────────────────────────────
+/target/
+# Cargo.lock is intentionally NOT ignored — this is an application, so the lock
+# file should be committed for reproducible builds. (Uncomment below only if the
+# server is ever published as a library crate.)
+# Cargo.lock
+
+# ─── Node / Frontend ─────────────────────────────────────────────────────────
+ui/node_modules/
+ui/dist/
+ui/dist-ssr/
+ui/*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ─── Tauri ───────────────────────────────────────────────────────────────────
+ui/src-tauri/target/
+ui/src-tauri/gen/
+
+# ─── VSCode ──────────────────────────────────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json   # keep — useful for recommending extensions to contributors
+!.vscode/settings.json     # keep — project-level editor settings (rulers, format on save, etc.)
+!.vscode/launch.json       # keep — debug launch configs
+
+# ─── macOS ───────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# ─── Linux ───────────────────────────────────────────────────────────────────
+*~
+.fuse_hidden*
+.nfs*
+
+# ─── Windows ─────────────────────────────────────────────────────────────────
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ─── Environment / Secrets ───────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ─── mise ────────────────────────────────────────────────────────────────────
+# mise installs tools globally; nothing project-local to ignore
+
+# ─── git-atlas runtime files ─────────────────────────────────────────────────
+# The server writes a port lockfile at runtime — not for version control
+# (stored in platform data dir, not repo root — nothing to ignore here)
