@@ -50,7 +50,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 # Config & secrets
 config = { version = "0.14.0" }
-keyring = { version = "3.3.0" }
+keyring = { version = "4.2.0" }
 
 # HTTP client (for forge APIs: Bitbucket, GitHub, GitLab)
 # default-features = false disables the default OpenSSL/native-tls backend
