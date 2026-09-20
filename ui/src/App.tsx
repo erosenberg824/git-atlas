@@ -11,6 +11,7 @@ import CommitGraph, {
 import CommitPanel from "./features/commit/CommitPanel";
 import DiffViewer from "./features/diff/DiffViewer";
 import FileBrowser from "./features/tree/FileBrowser";
+import FileViewer from "./features/tree/FileViewer";
 import SearchPanel from "./features/search/SearchPanel";
 import { WorkingPanel, StashPanel } from "./features/working/WorkingPanel";
 
@@ -162,6 +163,14 @@ export default function App() {
   const handleSelectFile = useCallback(async (path: string) => {
     setSelectedFilePath(path);
     setActivePanel("diff");
+  }, []);
+
+  // Files-tab file click: show the file's CONTENTS (not a diff), staying on the
+  // Files tab. Separate from handleSelectFile (used by the commit panel), which
+  // shows the diff for a changed file.
+  const [contentsPath, setContentsPath] = useState<string | null>(null);
+  const handleSelectFileContents = useCallback((path: string) => {
+    setContentsPath(path);
   }, []);
 
   function handleRepoKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -391,11 +400,24 @@ export default function App() {
                   <DiffViewerWrapper oid={selectedOid} filePath={selectedFilePath} />
                 )}
                 {activePanel === "tree" && selectedOid && treeData && (
-                  <FileBrowser
-                    entries={treeData.entries}
-                    onSelectFile={handleSelectFile}
-                    selectedPath={selectedFilePath}
-                  />
+                  <div className="flex flex-col h-full min-h-0">
+                    <div className="flex-1 min-h-0 overflow-auto border-b border-[#30363d]">
+                      <FileBrowser
+                        entries={treeData.entries}
+                        onSelectFile={handleSelectFileContents}
+                        selectedPath={contentsPath}
+                      />
+                    </div>
+                    <div className="flex-1 min-h-0">
+                      {contentsPath ? (
+                        <FileViewer oid={selectedOid} path={contentsPath} />
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-xs text-[#8b949e]">
+                          Select a file to view its contents
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 )}
                 {activePanel === "search" && (
                   <SearchPanel
