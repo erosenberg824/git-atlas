@@ -35,12 +35,16 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            # Apple silicon runner target; the produced .app/.dmg are for arm64.
-            rust_target: aarch64-apple-darwin
+            # Universal build → one .app/.dmg that runs on both Apple Silicon
+            # and Intel Macs. Requires staging the sidecar for both arches.
+            rust_target: universal-apple-darwin
+            sidecar_targets: "aarch64-apple-darwin x86_64-apple-darwin"
           - os: ubuntu-latest
             rust_target: x86_64-unknown-linux-gnu
+            sidecar_targets: "x86_64-unknown-linux-gnu"
           - os: windows-latest
             rust_target: x86_64-pc-windows-msvc
+            sidecar_targets: "x86_64-pc-windows-msvc"
 
     runs-on: ${{ matrix.os }}
 
@@ -85,30 +89,36 @@ jobs:
         working-directory: ui
         run: npm ci
 
-      - name: Ensure Rust target is installed
+      - name: Ensure Rust targets are installed
         shell: bash
-        run: rustup target add ${{ matrix.rust_target }}
+        run: |
+          set -euo pipefail
+          for t in ${{ matrix.sidecar_targets }}; do
+            rustup target add "$t"
+          done
 
-      # ── Prepare the sidecar: build the release `git-atlas` server and place
-      # it where Tauri's externalBin expects it, named with the target triple.
-      # `shell: bash` runs on all three runners (Git Bash on Windows), so this
-      # single step is cross-platform. On Windows we add the .exe suffix.
+      # ── Prepare the sidecar: build the release `git-atlas` server for each
+      # required arch and place it where Tauri's externalBin expects it, named
+      # with the target triple. For the macOS universal build this stages BOTH
+      # aarch64 and x86_64 slices (Tauri needs a sidecar per arch to lipo them).
+      # `shell: bash` runs on all three runners (Git Bash on Windows).
       - name: Build & stage server sidecar
         shell: bash
         run: |
           set -euo pipefail
-          TRIPLE="${{ matrix.rust_target }}"
           EXT=""
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then EXT=".exe"; fi
 
           # The UI must be built before the server so rust-embed embeds it.
           (cd ui && npm run build)
 
-          cargo build --release --bin git-atlas --target "$TRIPLE"
-
           mkdir -p ui/src-tauri/binaries
-          cp "target/${TRIPLE}/release/git-atlas${EXT}" \
-             "ui/src-tauri/binaries/git-atlas-${TRIPLE}${EXT}"
+          for TRIPLE in ${{ matrix.sidecar_targets }}; do
+            echo "==> building sidecar for $TRIPLE"
+            cargo build --release --bin git-atlas --target "$TRIPLE"
+            cp "target/${TRIPLE}/release/git-atlas${EXT}" \
+               "ui/src-tauri/binaries/git-atlas-${TRIPLE}${EXT}"
+          done
 
       # ── Build & bundle the Tauri app (also creates the Release on tags) ────
       - name: Build Tauri app
