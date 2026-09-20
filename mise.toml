@@ -9,11 +9,11 @@ CARGO_MANIFEST_DIR = "{{config_root}}"
 
 [tasks.dev-server]
 description = "Run the Rust backend server in watch mode (requires cargo-watch)"
-run = "cargo watch -x 'run --bin git-atlas'"
+run = "cargo watch -x 'run --bin git-atlas -- --no-browser'"
 
 [tasks.run-server]
-description = "Run the Rust backend server (no watch)"
-run = "cargo run --bin git-atlas"
+description = "Run the Rust backend server (no watch; no auto-open — use Vite at :1420)"
+run = "cargo run --bin git-atlas -- --no-browser"
 
 [tasks.dev-ui]
 description = "Run the Vite dev server for the frontend"
