@@ -10,6 +10,7 @@ mod search;
 mod forge;
 mod state;
 mod static_assets;
+mod watcher;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -39,6 +40,12 @@ async fn main() -> Result<()> {
 
     // Build shared application state
     let state = state::AppState::new(cfg.clone())?;
+
+    // If a repo is already configured (CLI arg / env / last-repo), start the
+    // live-update watcher for it now so changes broadcast immediately.
+    if let Some(repo) = cfg.repo_path.clone() {
+        state.start_watching(&repo).await;
+    }
 
     // Build the router
     let app = routes::build_router(state);

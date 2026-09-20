@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { GitBranch, Search, FolderOpen, Loader2, AlertCircle, GitCommit } from "lucide-react";
 import { api, type GraphResponse, type TreeResponse, type StatusSummary } from "./api/client";
 import { isTauri, pickDirectory, onFolderDrop } from "./lib/tauri";
+import { useLiveUpdates } from "./lib/useLiveUpdates";
 import CommitGraph, {
   isWorkingId,
   isStashId,
@@ -78,6 +79,26 @@ export default function App() {
     }
   }, []);
 
+  // Seamless refresh for live updates: re-fetch graph + status WITHOUT showing
+  // the loading spinner or resetting the current selection, so the view updates
+  // in place when the repo changes on disk.
+  const refreshGraph = useCallback(async () => {
+    try {
+      const g = await api.graph.get({ limit: 500 });
+      setGraph(g);
+      // Keep the current selection if it still exists; otherwise fall back to
+      // the newest commit (only when nothing is selected).
+      setSelectedOid((prev) =>
+        prev && g.nodes.some((n) => n.oid === prev)
+          ? prev
+          : prev ?? (g.nodes[0]?.oid ?? null),
+      );
+      api.status.get().then(setStatus).catch(() => setStatus(null));
+    } catch {
+      // Non-fatal: a transient failure shouldn't disrupt the current view.
+    }
+  }, []);
+
   // Load recent repos and auto-open last repo on startup
   useEffect(() => {
     api.repo.recent().then((recent) => {
@@ -116,6 +137,15 @@ export default function App() {
     // openRepo is stable enough for this purpose; we intentionally subscribe once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Live updates: refresh the graph/status when the repo changes on disk.
+  // The callback checks repoOpen via a ref so we don't refetch before a repo
+  // is opened. The hook itself subscribes once and auto-reconnects.
+  const repoOpenRef = useRef(repoOpen);
+  repoOpenRef.current = repoOpen;
+  useLiveUpdates(() => {
+    if (repoOpenRef.current) refreshGraph();
+  });
 
   const handleSelectCommit = useCallback((oid: string) => {
     setSelectedOid(oid);

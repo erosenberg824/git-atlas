@@ -13,6 +13,7 @@ pub mod diff;
 pub mod tree;
 pub mod search;
 pub mod forge;
+pub mod events;
 
 /// Build the top-level Axum router with all API routes and middleware.
 pub fn build_router(state: AppState) -> Router {
@@ -42,7 +43,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/search/index", post(search::build_index))
         // Forge integrations (Bitbucket, GitHub, GitLab)
         .route("/forge/config", post(forge::set_forge_config))
-        .route("/forge/prs", get(forge::list_prs));
+        .route("/forge/prs", get(forge::list_prs))
+        // Live updates — WebSocket that emits repo-change events
+        .route("/events", get(events::events_ws));
 
     Router::new()
         .nest("/api/v1", api)

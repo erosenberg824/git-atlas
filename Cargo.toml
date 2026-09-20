@@ -63,3 +63,6 @@ chrono = { version = "0.4.38", features = ["serde"] }
 # Embedded static assets (the built web UI, served by the standalone server)
 rust-embed = { version = "8.5.0" }
 mime_guess = { version = "2.0.5" }
+
+# Filesystem watching (live updates when the repo's .git changes)
+notify = { version = "6.1.1" }
