@@ -54,6 +54,14 @@ function CommitNodeComponent({ data }: NodeProps) {
         position={Position.Bottom}
         className="!bg-[#30363d] !border-0"
       />
+      {/* Top target handle: used by the "Working tree" pseudo-node, which sits
+          above HEAD and connects down into the top of the HEAD commit. */}
+      <Handle
+        id="t-top"
+        type="target"
+        position={Position.Top}
+        className="!bg-transparent !border-0"
+      />
       <Handle
         id="t-left"
         type="target"
@@ -73,8 +81,9 @@ function CommitNodeComponent({ data }: NodeProps) {
           {refs.map((ref) => (
             <span
               key={ref.name}
+              title={ref.name}
               className={[
-                "px-1.5 py-0 rounded text-[10px] font-mono leading-4",
+                "px-1.5 py-0 rounded text-[10px] font-mono leading-4 max-w-full truncate inline-block align-bottom",
                 ref.is_head
                   ? "bg-green-900/60 text-green-300 border border-green-700/50"
                   : ref.kind === "tag"
