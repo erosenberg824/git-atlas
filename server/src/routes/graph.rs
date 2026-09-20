@@ -26,6 +26,10 @@ pub struct GraphResponse {
     pub nodes: Vec<git_graph::CommitNode>,
     pub edges: Vec<git_graph::CommitEdge>,
     pub refs: Vec<git_graph::RefLabel>,
+    /// Visible-branch commits OLDER than the window's `since` (hidden below).
+    pub before_count: usize,
+    /// Visible-branch commits NEWER than the window's `until` (hidden above).
+    pub after_count: usize,
 }
 
 /// GET /api/v1/graph — return the commit DAG as nodes and edges.
@@ -45,14 +49,14 @@ pub async fn get_graph(
             .collect()
     });
 
-    let (nodes, edges, refs) = tokio::task::spawn_blocking(move || {
+    let (nodes, edges, refs, before_count, after_count) = tokio::task::spawn_blocking(move || {
         let repo = git2::Repository::open(&path).map_err(crate::error::AppError::Git)?;
         git_graph::build_graph(&repo, start.as_deref(), limit, since, until, seed_refs.as_deref())
     })
     .await
     .map_err(|e| crate::error::AppError::Internal(anyhow::anyhow!(e)))??;
 
-    Ok(Json(GraphResponse { nodes, edges, refs }))
+    Ok(Json(GraphResponse { nodes, edges, refs, before_count, after_count }))
 }
 
 /// GET /api/v1/timebounds — newest/oldest commit timestamps + total count,
