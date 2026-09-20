@@ -178,9 +178,18 @@ mod tests {
         count
     }
 
+    // GIT_ATLAS_LOG_DIR is process-global, so tests that set it must not run
+    // concurrently with each other. Serialize them behind this mutex.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn concurrent_writes_are_line_atomic() {
-        let dir = std::env::temp_dir().join(format!("gal-log-test-{}", std::process::id()));
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "gal-log-atomic-{}-{}",
+            std::process::id(),
+            uuid_like()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("GIT_ATLAS_LOG_DIR", &dir);
@@ -214,7 +223,12 @@ mod tests {
 
     #[test]
     fn rotation_keeps_one_rollover() {
-        let dir = std::env::temp_dir().join(format!("gal-rot-test-{}", std::process::id()));
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "gal-log-rot-{}-{}",
+            std::process::id(),
+            uuid_like()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("GIT_ATLAS_LOG_DIR", &dir);
@@ -232,5 +246,11 @@ mod tests {
 
         std::env::remove_var("GIT_ATLAS_LOG_DIR");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Small unique-ish suffix without pulling in a uuid dependency here.
+    fn uuid_like() -> u128 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
     }
 }
