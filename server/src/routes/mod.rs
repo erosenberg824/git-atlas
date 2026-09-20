@@ -26,6 +26,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/status", get(repo::get_status))
         // Graph — commit DAG
         .route("/graph", get(graph::get_graph))
+        .route("/timebounds", get(graph::get_time_bounds))
         // Commits
         .route("/commits/:oid", get(commits::get_commit))
         // Diffs — static segments (working/staged/stash) are registered before

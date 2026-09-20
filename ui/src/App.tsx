@@ -8,6 +8,7 @@ import CommitGraph, {
   isStashId,
   stashIndexFromId,
 } from "./features/graph/CommitGraph";
+import TimeScrubber from "./features/graph/TimeScrubber";
 import CommitPanel from "./features/commit/CommitPanel";
 import DiffViewer from "./features/diff/DiffViewer";
 import FileBrowser from "./features/tree/FileBrowser";
@@ -33,6 +34,10 @@ export default function App() {
   const [graphLoading, setGraphLoading] = useState(false);
   const [graphError, setGraphError] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusSummary | null>(null);
+  // Time scrubber: full repo range + current window (unix seconds). Null window
+  // = no time filter (show everything within limit).
+  const [timeBounds, setTimeBounds] = useState<{ newest: number; oldest: number } | null>(null);
+  const [timeWindow, setTimeWindow] = useState<{ since: number; until: number } | null>(null);
 
   const [selectedOid, setSelectedOid] = useState<string | null>(null);
   const [activePanel, setActivePanel] = useState<RightPanel>("commit");
@@ -51,6 +56,8 @@ export default function App() {
       setShowPicker(false);
       setSelectedOid(null);
       setSelectedFilePath(null);
+      setTimeWindow(null);
+      setTimeBounds(null);
       setRepoPath(target);
       // Refresh the recent list so the just-opened repo moves to the front.
       api.repo.recent().then(setRecentRepos).catch(() => {});
@@ -73,6 +80,14 @@ export default function App() {
       }
       // Working/staged/stash status drives the pseudo-nodes. Non-fatal if it fails.
       api.status.get().then(setStatus).catch(() => setStatus(null));
+      // Repo time bounds drive the scrubber's full range. Non-fatal.
+      api.graph.timeBounds().then((b) => {
+        if (b.newest_ts != null && b.oldest_ts != null && b.newest_ts > b.oldest_ts) {
+          setTimeBounds({ newest: b.newest_ts, oldest: b.oldest_ts });
+        } else {
+          setTimeBounds(null);
+        }
+      }).catch(() => setTimeBounds(null));
     } catch (e) {
       setGraphError(e instanceof Error ? e.message : "Failed to load graph");
     } finally {
@@ -147,6 +162,29 @@ export default function App() {
   useLiveUpdates(() => {
     if (repoOpenRef.current) refreshGraph();
   });
+
+  // Debounced windowed re-query: when the scrubber changes the time window,
+  // re-fetch the graph limited to [since, until]. Debounced so dragging doesn't
+  // hammer the server. Skips the initial mount (timeWindow starts null).
+  const windowDebounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => {
+    if (!repoOpen || !timeWindow) return;
+    if (windowDebounce.current) clearTimeout(windowDebounce.current);
+    windowDebounce.current = setTimeout(() => {
+      api.graph
+        .get({ limit: 500, since: timeWindow.since, until: timeWindow.until })
+        .then((g) => {
+          setGraph(g);
+          setSelectedOid((prev) =>
+            prev && g.nodes.some((n) => n.oid === prev) ? prev : (g.nodes[0]?.oid ?? null),
+          );
+        })
+        .catch(() => {});
+    }, 250);
+    return () => {
+      if (windowDebounce.current) clearTimeout(windowDebounce.current);
+    };
+  }, [timeWindow, repoOpen]);
 
   const handleSelectCommit = useCallback((oid: string) => {
     setSelectedOid(oid);
@@ -312,24 +350,36 @@ export default function App() {
       {/* Main layout */}
       <div className="flex flex-1 min-h-0">
         {/* Left: commit graph */}
-        <div className="flex flex-col w-[55%] min-w-0 border-r border-[#30363d]">
-          {graphLoading ? (
-            <div className="flex items-center justify-center h-full text-[#8b949e]">
-              <Loader2 size={20} className="animate-spin mr-2" />
-              Loading graph…
-            </div>
-          ) : graphError ? (
-            <div className="flex items-center justify-center h-full text-red-400 text-sm gap-2">
-              <AlertCircle size={16} /> {graphError}
-            </div>
-          ) : graph ? (
-            <CommitGraph
-              graph={graph}
-              status={status}
-              selectedOid={selectedOid}
-              onSelectCommit={handleSelectCommit}
+        <div className="flex w-[55%] min-w-0 border-r border-[#30363d]">
+          {/* Vertical time scrubber (only when we have a valid time range) */}
+          {graph && timeBounds && (
+            <TimeScrubber
+              newestTs={timeBounds.newest}
+              oldestTs={timeBounds.oldest}
+              since={timeWindow?.since ?? timeBounds.oldest}
+              until={timeWindow?.until ?? timeBounds.newest}
+              onChange={(since, until) => setTimeWindow({ since, until })}
             />
-          ) : null}
+          )}
+          <div className="flex flex-col flex-1 min-w-0">
+            {graphLoading ? (
+              <div className="flex items-center justify-center h-full text-[#8b949e]">
+                <Loader2 size={20} className="animate-spin mr-2" />
+                Loading graph…
+              </div>
+            ) : graphError ? (
+              <div className="flex items-center justify-center h-full text-red-400 text-sm gap-2">
+                <AlertCircle size={16} /> {graphError}
+              </div>
+            ) : graph ? (
+              <CommitGraph
+                graph={graph}
+                status={status}
+                selectedOid={selectedOid}
+                onSelectCommit={handleSelectCommit}
+              />
+            ) : null}
+          </div>
         </div>
 
         {/* Right: detail panels */}

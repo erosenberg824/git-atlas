@@ -12,6 +12,10 @@ pub struct GraphQuery {
     pub limit: Option<usize>,
     /// Start walking from this ref/oid (default: HEAD).
     pub start: Option<String>,
+    /// Only include commits with time >= since (unix seconds).
+    pub since: Option<i64>,
+    /// Only include commits with time <= until (unix seconds).
+    pub until: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -29,13 +33,31 @@ pub async fn get_graph(
     let path = state.repo_path().await?;
     let limit = query.limit.unwrap_or(500);
     let start = query.start.clone();
+    let since = query.since;
+    let until = query.until;
 
     let (nodes, edges, refs) = tokio::task::spawn_blocking(move || {
         let repo = git2::Repository::open(&path).map_err(crate::error::AppError::Git)?;
-        git_graph::build_graph(&repo, start.as_deref(), limit)
+        git_graph::build_graph(&repo, start.as_deref(), limit, since, until)
     })
     .await
     .map_err(|e| crate::error::AppError::Internal(anyhow::anyhow!(e)))??;
 
     Ok(Json(GraphResponse { nodes, edges, refs }))
+}
+
+/// GET /api/v1/timebounds — newest/oldest commit timestamps + total count,
+/// for the time scrubber's full-range extent.
+pub async fn get_time_bounds(
+    State(state): State<AppState>,
+) -> ApiResult<Json<git_graph::TimeBounds>> {
+    let path = state.repo_path().await?;
+    let bounds = tokio::task::spawn_blocking(move || {
+        let repo = git2::Repository::open(&path).map_err(crate::error::AppError::Git)?;
+        git_graph::time_bounds(&repo)
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Internal(anyhow::anyhow!(e)))??;
+
+    Ok(Json(bounds))
 }
