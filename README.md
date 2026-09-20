@@ -234,7 +234,7 @@ cargo run --bin git-atlas -- ~/code/my-project
 | `ATLAS_PORT` | `0` (random) | Port to bind the server to |
 | `ATLAS_REPO_PATH` | — | Repository to open on startup (overridden by the positional CLI arg) |
 | `ATLAS_DATA_DIR` | platform default | Where to store search indexes, the port lockfile, and recent/last-repo state |
-| `RUST_LOG` | `git_atlas_server=debug` | Log level |
+| `RUST_LOG` | `git_atlas=debug` | Log level |
 
 ## WSL
 

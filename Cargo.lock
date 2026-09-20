@@ -1634,21 +1634,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "git-atlas-app"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-shell",
-]
-
-[[package]]
-name = "git-atlas-server"
+name = "git-atlas"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1670,6 +1656,20 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "git-atlas-app"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-shell",
 ]
 
 [[package]]

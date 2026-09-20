@@ -15,7 +15,7 @@
 //!   across a rotation instead of writing into a deleted inode.
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 /// Rotate when the active log exceeds this size. One rollover (`.1`) is kept,
 /// so total footprint is bounded at ~2x this.
@@ -115,9 +115,12 @@ pub fn log_line(tag: &str, message: &str) {
     let pid = std::process::id();
     let line = format!("{} [pid {}] [{}] {}", timestamp(), pid, tag, message);
 
-    // Always echo to stdout so running the binary from a terminal shows output
-    // live (per-instance terminals never interleave with each other).
-    println!("{line}");
+    // Echo to stdout only when stdout is an actual terminal, so running the
+    // binary from a shell shows output live, while a GUI launch (no attached
+    // terminal) stays silent and writes to the log file only.
+    if std::io::stdout().is_terminal() {
+        println!("{line}");
+    }
 
     let (Some(path), Some(lockp)) = (log_path(), lock_path()) else {
         return;
