@@ -51,7 +51,7 @@ pub fn build_graph(
     since: Option<i64>,
     until: Option<i64>,
     seed_refs: Option<&[String]>,
-) -> Result<(Vec<CommitNode>, Vec<CommitEdge>, Vec<RefLabel>), AppError> {
+) -> Result<(Vec<CommitNode>, Vec<CommitEdge>, Vec<RefLabel>, usize, usize), AppError> {
     let mut revwalk = repo.revwalk().map_err(AppError::Git)?;
     revwalk
         .set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
@@ -83,7 +83,7 @@ pub fn build_graph(
         }
         if pushed == 0 {
             let refs = collect_refs(repo)?;
-            return Ok((Vec::new(), Vec::new(), refs));
+            return Ok((Vec::new(), Vec::new(), refs, 0, 0));
         }
     } else {
         // A repository with no commits has an unborn HEAD (e.g. refs/heads/main
@@ -91,7 +91,7 @@ pub fn build_graph(
         // so treat this as a valid-but-empty graph rather than an error.
         if repo.is_empty().unwrap_or(false) || repo.head().is_err() {
             let refs = collect_refs(repo)?;
-            return Ok((Vec::new(), Vec::new(), refs));
+            return Ok((Vec::new(), Vec::new(), refs, 0, 0));
         }
         // Seed the walk from ALL refs (local + remote branches, tags, HEAD) so
         // the graph includes commits reachable from any ref — not just those on
@@ -104,11 +104,14 @@ pub fn build_graph(
     let mut edges = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    let mut included = 0usize;
+    // Counts of visible (seeded) commits that fall OUTSIDE the window, so the UI
+    // can show "X before · Y after". before = older than `since`, after = newer
+    // than `until`. Tallied over the full walk (independent of the node limit).
+    let mut before_count = 0usize;
+    let mut after_count = 0usize;
+    let mut node_budget_left = limit > 0;
+
     for oid_result in revwalk {
-        if included >= limit {
-            break;
-        }
         let oid = oid_result.map_err(AppError::Git)?;
         if !seen.insert(oid) {
             continue;
@@ -117,21 +120,25 @@ pub fn build_graph(
         let commit = repo.find_commit(oid).map_err(AppError::Git)?;
         let ts = commit.time().seconds();
 
-        // Time-window filtering. Skip commits outside [since, until]. We use
-        // `continue` (not an early break) because TOPOLOGICAL ordering doesn't
-        // guarantee strict time-descending across branches, so a later commit
-        // could still fall within the window.
+        // Time-window classification.
         if let Some(until) = until {
             if ts > until {
+                after_count += 1; // newer than the window
                 continue;
             }
         }
         if let Some(since) = since {
             if ts < since {
+                before_count += 1; // older than the window
                 continue;
             }
         }
-        included += 1;
+
+        // In-window commit: build a node until the limit is reached. (We keep
+        // walking after the limit only to finish tallying before/after counts.)
+        if !node_budget_left {
+            continue;
+        }
 
         let short_oid = oid.to_string()[..8].to_string();
         let parents: Vec<String> = commit
@@ -156,6 +163,9 @@ pub fn build_graph(
             timestamp: commit.time().seconds(),
             parents,
         });
+        if nodes.len() >= limit {
+            node_budget_left = false;
+        }
     }
 
     // Drop edges whose endpoints aren't both in the returned node set. With a
@@ -167,7 +177,7 @@ pub fn build_graph(
     edges.retain(|e| node_ids.contains(e.source.as_str()) && node_ids.contains(e.target.as_str()));
 
     let refs = collect_refs(repo)?;
-    Ok((nodes, edges, refs))
+    Ok((nodes, edges, refs, before_count, after_count))
 }
 
 /// Repository time bounds: newest & oldest commit timestamps (unix seconds)
