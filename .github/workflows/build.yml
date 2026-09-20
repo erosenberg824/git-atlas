@@ -45,6 +45,16 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
+      - name: Install frontend deps
+        working-directory: ui
+        run: npm ci
+
+      # The server embeds ui/dist via rust-embed (#[folder = "../ui/dist"]), so
+      # the folder must exist for the server crate to compile — build it first.
+      - name: Build web UI (needed for rust-embed)
+        working-directory: ui
+        run: npm run build
+
       # Cover only the server crate (`git-atlas`) — the git/graph logic worth
       # testing. This deliberately skips the Tauri app crate (`git-atlas-app`),
       # which would otherwise force compiling the whole GTK/WebKit + wry stack
@@ -62,10 +72,6 @@ jobs:
             cargo llvm-cov report -p git-atlas --summary-only || true;
             echo '```';
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install frontend deps
-        working-directory: ui
-        run: npm ci
 
       - name: Frontend tests with coverage
         working-directory: ui
