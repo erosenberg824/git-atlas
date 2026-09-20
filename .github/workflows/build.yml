@@ -1,27 +1,17 @@
 name: build
 
-# Build the desktop app (and its bundled `git-atlas` server sidecar) on all
-# three desktop OSes. On pushes/PRs we build and upload the installers as
-# workflow artifacts; on a version tag (v*) we also create a GitHub Release and
-# attach the installers to it.
+# CI/CD pipeline:
+#  - `test` runs the Rust + frontend suites (with coverage) on every push/PR.
+#  - the 3-OS `build` jobs depend on `test` (needs: test) so nothing is built or
+#    released unless tests pass. To avoid a slow 3-OS build on every commit, the
+#    build only runs on version tags (v*) or manual dispatch — but always gated
+#    on green tests.
 on:
-#  push:
-#    branches: [main]
-#    tags: ["v*"]
-    # Doc-only changes shouldn't trigger a full 3-OS build. (Tag pushes below
-    # are unaffected — a release always builds regardless of what changed.)
-#    paths-ignore:
-#      - "**.md"
-#      - "LICENSE"
-#      - ".kiro/**"
-#      - ".gitignore"
-#  pull_request:
-#    branches: [main]
-#    paths-ignore:
-#      - "**.md"
-#      - "LICENSE"
-#      - ".kiro/**"
-#      - ".gitignore"
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 # Allow the release job to create releases / upload assets.
@@ -29,7 +19,65 @@ permissions:
   contents: write
 
 jobs:
+  # ── Fast test suite (runs on every push/PR; gates the build) ─────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev
+
+      - name: Set up mise (pinned Rust + Node)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: test-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: test-cargo-
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Rust tests with coverage
+        run: cargo llvm-cov --workspace --lcov --output-path lcov-rust.info
+
+      - name: Install frontend deps
+        working-directory: ui
+        run: npm ci
+
+      - name: Frontend tests with coverage
+        working-directory: ui
+        run: npm test -- --coverage
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          if-no-files-found: warn
+          path: |
+            lcov-rust.info
+            ui/coverage/**
+
   build:
+    # Only build/release when tests pass. Skip the slow 3-OS build on ordinary
+    # pushes — build on tags or manual dispatch (still gated on `test`).
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:

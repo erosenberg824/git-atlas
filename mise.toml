@@ -39,8 +39,26 @@ run = "{{config_root}}/scripts/prepare-sidecar.sh && npm run tauri build"
 dir = "{{config_root}}/ui"
 
 [tasks.test]
-description = "Run all tests"
+description = "Run all tests (Rust + frontend)"
+run = "mise run test-server && mise run test-ui"
+
+[tasks.test-server]
+description = "Run the Rust test suite"
 run = "cargo test --workspace"
+
+[tasks.test-ui]
+description = "Run the frontend (Vitest) test suite"
+run = "npm test"
+dir = "{{config_root}}/ui"
+
+[tasks.coverage-ui]
+description = "Frontend test coverage (Vitest + v8)"
+run = "npm test -- --coverage"
+dir = "{{config_root}}/ui"
+
+[tasks.coverage-server]
+description = "Rust test coverage (requires: cargo install cargo-llvm-cov)"
+run = "cargo llvm-cov --workspace --summary-only"
 
 [tasks.lint]
 description = "Run clippy and frontend linter"
