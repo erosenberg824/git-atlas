@@ -120,6 +120,19 @@ jobs:
                "ui/src-tauri/binaries/git-atlas-${TRIPLE}${EXT}"
           done
 
+          # For the macOS universal build, the Tauri bundler expects a SINGLE
+          # sidecar named with the `universal-apple-darwin` triple (not the two
+          # per-arch files). Combine the arch slices with lipo.
+          if [[ "${{ matrix.rust_target }}" == "universal-apple-darwin" ]]; then
+            echo "==> lipo-ing universal sidecar"
+            lipo -create \
+              "ui/src-tauri/binaries/git-atlas-aarch64-apple-darwin" \
+              "ui/src-tauri/binaries/git-atlas-x86_64-apple-darwin" \
+              -output "ui/src-tauri/binaries/git-atlas-universal-apple-darwin"
+            chmod +x "ui/src-tauri/binaries/git-atlas-universal-apple-darwin"
+            lipo -info "ui/src-tauri/binaries/git-atlas-universal-apple-darwin"
+          fi
+
       # ── Build & bundle the Tauri app (also creates the Release on tags) ────
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
