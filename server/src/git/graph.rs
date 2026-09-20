@@ -65,7 +65,11 @@ pub fn build_graph(
             let refs = collect_refs(repo)?;
             return Ok((Vec::new(), Vec::new(), refs));
         }
-        revwalk.push_head().map_err(AppError::Git)?;
+        // Seed the walk from ALL refs (local + remote branches, tags, HEAD) so
+        // the graph includes commits reachable from any ref — not just those on
+        // the current HEAD. Without this, e.g. freshly fetched remote branches
+        // would collect ref labels but have no commit nodes to attach to.
+        revwalk.push_glob("refs/*").map_err(AppError::Git)?;
     }
 
     let mut nodes = Vec::new();
@@ -106,6 +110,14 @@ pub fn build_graph(
             parents,
         });
     }
+
+    // Drop edges whose endpoints aren't both in the returned node set. With a
+    // `limit`, a commit near the cutoff can have a parent that falls outside the
+    // window; emitting that edge would reference a non-existent node and break
+    // client-side rendering (React Flow throws on edges to unknown nodes).
+    let node_ids: std::collections::HashSet<&str> =
+        nodes.iter().map(|n| n.oid.as_str()).collect();
+    edges.retain(|e| node_ids.contains(e.source.as_str()) && node_ids.contains(e.target.as_str()));
 
     let refs = collect_refs(repo)?;
     Ok((nodes, edges, refs))
