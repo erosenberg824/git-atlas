@@ -111,6 +111,12 @@ export interface GraphResponse {
   refs: RefLabel[];
 }
 
+export interface TimeBounds {
+  newest_ts: number | null;
+  oldest_ts: number | null;
+  count: number;
+}
+
 export interface Signature {
   name: string;
   email: string;
@@ -225,12 +231,15 @@ export const api = {
     recent: () => get<string[]>("/repo/recent"),
   },
   graph: {
-    get: (params?: { limit?: number; start?: string }) => {
+    get: (params?: { limit?: number; start?: string; since?: number; until?: number }) => {
       const q = new URLSearchParams();
       if (params?.limit) q.set("limit", String(params.limit));
       if (params?.start) q.set("start", params.start);
+      if (params?.since != null) q.set("since", String(params.since));
+      if (params?.until != null) q.set("until", String(params.until));
       return get<GraphResponse>(`/graph?${q}`);
     },
+    timeBounds: () => get<TimeBounds>("/timebounds"),
   },
   commits: {
     get: (oid: string) => get<CommitDetail>(`/commits/${oid}`),

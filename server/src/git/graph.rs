@@ -45,6 +45,8 @@ pub fn build_graph(
     repo: &Repository,
     start: Option<&str>,
     limit: usize,
+    since: Option<i64>,
+    until: Option<i64>,
 ) -> Result<(Vec<CommitNode>, Vec<CommitEdge>, Vec<RefLabel>), AppError> {
     let mut revwalk = repo.revwalk().map_err(AppError::Git)?;
     revwalk
@@ -76,8 +78,9 @@ pub fn build_graph(
     let mut edges = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for (i, oid_result) in revwalk.enumerate() {
-        if i >= limit {
+    let mut included = 0usize;
+    for oid_result in revwalk {
+        if included >= limit {
             break;
         }
         let oid = oid_result.map_err(AppError::Git)?;
@@ -86,6 +89,24 @@ pub fn build_graph(
         }
 
         let commit = repo.find_commit(oid).map_err(AppError::Git)?;
+        let ts = commit.time().seconds();
+
+        // Time-window filtering. Skip commits outside [since, until]. We use
+        // `continue` (not an early break) because TOPOLOGICAL ordering doesn't
+        // guarantee strict time-descending across branches, so a later commit
+        // could still fall within the window.
+        if let Some(until) = until {
+            if ts > until {
+                continue;
+            }
+        }
+        if let Some(since) = since {
+            if ts < since {
+                continue;
+            }
+        }
+        included += 1;
+
         let short_oid = oid.to_string()[..8].to_string();
         let parents: Vec<String> = commit
             .parent_ids()
@@ -121,6 +142,36 @@ pub fn build_graph(
 
     let refs = collect_refs(repo)?;
     Ok((nodes, edges, refs))
+}
+
+/// Repository time bounds: newest & oldest commit timestamps (unix seconds)
+/// across all refs, plus the total commit count. Drives the time scrubber's
+/// full-range extent. Returns None bounds for an empty repo.
+#[derive(Debug, Serialize)]
+pub struct TimeBounds {
+    pub newest_ts: Option<i64>,
+    pub oldest_ts: Option<i64>,
+    pub count: usize,
+}
+
+pub fn time_bounds(repo: &Repository) -> Result<TimeBounds, AppError> {
+    if repo.is_empty().unwrap_or(false) || repo.head().is_err() {
+        return Ok(TimeBounds { newest_ts: None, oldest_ts: None, count: 0 });
+    }
+    let mut revwalk = repo.revwalk().map_err(AppError::Git)?;
+    revwalk.push_glob("refs/*").map_err(AppError::Git)?;
+
+    let mut newest: Option<i64> = None;
+    let mut oldest: Option<i64> = None;
+    let mut count = 0usize;
+    for oid_result in revwalk {
+        let oid = oid_result.map_err(AppError::Git)?;
+        let ts = repo.find_commit(oid).map_err(AppError::Git)?.time().seconds();
+        newest = Some(newest.map_or(ts, |n| n.max(ts)));
+        oldest = Some(oldest.map_or(ts, |o| o.min(ts)));
+        count += 1;
+    }
+    Ok(TimeBounds { newest_ts: newest, oldest_ts: oldest, count })
 }
 
 /// Collect all local branches, remote branches, and tags with their target OIDs.
