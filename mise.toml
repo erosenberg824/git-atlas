@@ -3,7 +3,7 @@ rust = "1.88.0"
 node = "22.19.0"
 
 [env]
-RUST_LOG = "git_atlas_server=debug,tower_http=debug"
+RUST_LOG = "git_atlas=debug,tower_http=debug"
 # Point Cargo to the workspace root
 CARGO_MANIFEST_DIR = "{{config_root}}"
 

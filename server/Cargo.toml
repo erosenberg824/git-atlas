@@ -1,5 +1,5 @@
 [package]
-name = "git-atlas-server"
+name = "git-atlas"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

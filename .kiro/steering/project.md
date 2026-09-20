@@ -108,7 +108,7 @@ cd ui && npm run tauri dev
 | `ATLAS_PORT` | `0` (random) | Server port |
 | `ATLAS_REPO_PATH` | — | Repo to open on startup |
 | `ATLAS_DATA_DIR` | platform default | Indexes + lockfile location |
-| `RUST_LOG` | `git_atlas_server=debug` | Log level |
+| `RUST_LOG` | `git_atlas=debug` | Log level |
 
 ## Code conventions
 

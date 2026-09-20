@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "git_atlas_server=debug,tower_http=debug".into()),
+                .unwrap_or_else(|_| "git_atlas=debug,tower_http=debug".into()),
         )
         .init();
 
@@ -148,7 +148,7 @@ ENVIRONMENT:
                        recent/last-repo state (default: platform data dir)
     ATLAS_NO_LOCKFILE  Set to 1 to skip writing the shared server.port lockfile
                        (used when running as the desktop app's sidecar)
-    RUST_LOG           Log filter (default: git_atlas_server=debug,tower_http=debug)
+    RUST_LOG           Log filter (default: git_atlas=debug,tower_http=debug)
 
 The server listens on http://127.0.0.1:<port> and prints the access URL on
 startup. Point a browser there (handy under WSL), or let the desktop app
