@@ -103,6 +103,7 @@ export interface RefLabel {
   oid: string;
   kind: "branch" | "remotebranch" | "tag" | "head";
   is_head: boolean;
+  tip_ts: number | null;
 }
 
 export interface GraphResponse {
@@ -231,12 +232,13 @@ export const api = {
     recent: () => get<string[]>("/repo/recent"),
   },
   graph: {
-    get: (params?: { limit?: number; start?: string; since?: number; until?: number }) => {
+    get: (params?: { limit?: number; start?: string; since?: number; until?: number; refs?: string[] }) => {
       const q = new URLSearchParams();
       if (params?.limit) q.set("limit", String(params.limit));
       if (params?.start) q.set("start", params.start);
       if (params?.since != null) q.set("since", String(params.since));
       if (params?.until != null) q.set("until", String(params.until));
+      if (params?.refs && params.refs.length > 0) q.set("refs", params.refs.join(","));
       return get<GraphResponse>(`/graph?${q}`);
     },
     timeBounds: () => get<TimeBounds>("/timebounds"),

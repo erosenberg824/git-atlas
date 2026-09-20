@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { GitMerge, ChevronsDownUp } from "lucide-react";
 import type { CommitNode, RefLabel } from "../../api/client";
 
 interface CommitNodeData {
@@ -7,6 +8,10 @@ interface CommitNodeData {
   refs: RefLabel[];
   selected: boolean;
   onSelect: (oid: string) => void;
+  /** True when this commit heads a foldable linear run (shows a collapse control). */
+  canCollapse?: boolean;
+  /** Collapse the linear run this commit heads. */
+  onCollapse?: (oid: string) => void;
 }
 
 /**
@@ -20,7 +25,8 @@ interface CommitNodeData {
  * (parent commits sit BELOW their children, so the source handle is on top).
  */
 function CommitNodeComponent({ data }: NodeProps) {
-  const { commit, refs, selected, onSelect } = data as unknown as CommitNodeData;
+  const { commit, refs, selected, onSelect, canCollapse, onCollapse } =
+    data as unknown as CommitNodeData;
 
   const date = new Date(commit.timestamp * 1000);
   const dateStr = date.toLocaleDateString(undefined, {
@@ -100,10 +106,27 @@ function CommitNodeComponent({ data }: NodeProps) {
         </div>
       )}
 
-      {/* Commit hash + date */}
+      {/* Commit hash + date (+ subtle merge indicator for 2+ parents) */}
       <div className="flex items-center justify-between gap-2 mb-0.5">
-        <span className="font-mono text-[#8b949e]">{commit.short_oid}</span>
+        <span className="font-mono text-[#8b949e] flex items-center gap-1">
+          {commit.parents.length >= 2 && (
+            <GitMerge size={11} className="text-purple-400/80" aria-label="merge commit" />
+          )}
+          {commit.short_oid}
+        </span>
         <span className="text-[#8b949e]">{dateStr}</span>
+        {canCollapse && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onCollapse?.(commit.oid);
+            }}
+            className="ml-1 text-purple-300/80 hover:text-purple-200"
+            title="Collapse this linear run of commits"
+          >
+            <ChevronsDownUp size={11} />
+          </button>
+        )}
       </div>
 
       {/* Summary */}

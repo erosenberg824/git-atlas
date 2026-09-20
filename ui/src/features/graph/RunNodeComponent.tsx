@@ -44,10 +44,10 @@ function RunNodeComponent({ data }: NodeProps) {
 
       <div className="flex items-center gap-1.5 mb-0.5 text-purple-200 font-semibold">
         <ChevronsUpDown size={12} className="text-purple-300" />
-        {d.count} commits
+        {d.label ? `⑂ ${d.label}` : `${d.count} commits`}
       </div>
       <div className="text-[#8b949e] text-[11px]">
-        {oldest} → {newest}
+        {d.label ? `${d.count} commits · ${oldest} → ${newest}` : `${oldest} → ${newest}`}
       </div>
       <div className="text-[#6e7681] text-[10px] mt-0.5 truncate">click to expand</div>
     </div>

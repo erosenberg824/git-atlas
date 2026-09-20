@@ -115,7 +115,7 @@ export default function TimeScrubber({
     new Date(ts * 1000).toLocaleDateString(undefined, { year: "2-digit", month: "short", day: "numeric" });
 
   return (
-    <div className="flex flex-col items-center h-full w-14 shrink-0 border-r border-[#30363d] bg-[#0d1117] py-2 select-none">
+    <div className="flex flex-col items-center h-full w-24 shrink-0 border-r border-[#30363d] bg-[#0d1117] py-2 select-none">
       <div className="text-[9px] text-[#6e7681] mb-1">{fmt(newestTs)}</div>
       <div
         ref={trackRef}
@@ -130,16 +130,22 @@ export default function TimeScrubber({
           onPointerDown={onPointerDown("body")}
           title="Drag to pan through time; drag ends to zoom"
         >
-          {/* Top resize handle */}
+          {/* Top resize handle + 'until' date label (above the handle) */}
           <div
             className="absolute -top-1 left-1/2 -translate-x-1/2 w-4 h-2 rounded bg-blue-400 cursor-ns-resize"
             onPointerDown={onPointerDown("top")}
           />
-          {/* Bottom resize handle */}
+          <div className="absolute -top-4 left-1/2 -translate-x-1/2 whitespace-nowrap text-[9px] text-blue-200 bg-[#0d1117]/90 px-1 rounded pointer-events-none">
+            {fmt(until)}
+          </div>
+          {/* Bottom resize handle + 'since' date label (below the handle) */}
           <div
             className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-4 h-2 rounded bg-blue-400 cursor-ns-resize"
             onPointerDown={onPointerDown("bottom")}
           />
+          <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 whitespace-nowrap text-[9px] text-blue-200 bg-[#0d1117]/90 px-1 rounded pointer-events-none">
+            {fmt(since)}
+          </div>
         </div>
       </div>
       <div className="text-[9px] text-[#6e7681] mt-1">{fmt(oldestTs)}</div>
