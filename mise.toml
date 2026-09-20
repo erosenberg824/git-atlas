@@ -1,0 +1,44 @@
+[tools]
+rust = "1.88.0"
+node = "22.19.0"
+
+[env]
+RUST_LOG = "git_atlas_server=debug,tower_http=debug"
+# Point Cargo to the workspace root
+CARGO_MANIFEST_DIR = "{{config_root}}"
+
+[tasks.dev-server]
+description = "Run the Rust backend server in watch mode (requires cargo-watch)"
+run = "cargo watch -x 'run --bin git-atlas'"
+
+[tasks.run-server]
+description = "Run the Rust backend server (no watch)"
+run = "cargo run --bin git-atlas"
+
+[tasks.dev-ui]
+description = "Run the Vite dev server for the frontend"
+run = "npm run dev"
+dir = "{{config_root}}/ui"
+
+[tasks.dev]
+description = "Run backend and frontend concurrently"
+run = "mise run dev-server & mise run dev-ui"
+
+[tasks.tauri-dev]
+description = "Run the Tauri app in development mode"
+run = "npm run tauri dev"
+dir = "{{config_root}}/ui"
+
+[tasks.build]
+description = "Build the full project (server sidecar + Tauri app)"
+run = "{{config_root}}/scripts/prepare-sidecar.sh && npm run tauri build"
+dir = "{{config_root}}/ui"
+
+[tasks.test]
+description = "Run all tests"
+run = "cargo test --workspace"
+
+[tasks.lint]
+description = "Run clippy and frontend linter"
+run = "cargo clippy --workspace -- -D warnings && npm run lint"
+dir = "{{config_root}}/ui"
