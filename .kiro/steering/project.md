@@ -140,3 +140,30 @@ cd ui && npm run tauri dev
 - TypeScript: strict mode, no `any`. API types live in `src/api/client.ts` and are imported from there.
 - Tailwind v4 (no config file — uses CSS `@import "tailwindcss"`). Dark theme with CSS custom properties in `index.css`.
 - React Flow node data is typed as `unknown` then cast with `as unknown as MyType` due to React Flow's generic constraints.
+
+## Testing
+
+The project has a real test suite; keep it green and extend it when changing logic.
+
+**What to test (priority order):**
+- **Server git/graph logic** (`server/src/git/graph.rs`) — the highest-value, trickiest code: `build_graph` (all-refs seeding, dangling-edge dropping, `since`/`until` window + `before_count`/`after_count`, ref-scoping), tag peeling, `time_bounds`. Test against **real temp repos** built with `git2` (see the `temp_repo`/`commit` helpers in the `#[cfg(test)] mod tests` there) — deterministic, no network, cleaned up after.
+- **Pure frontend algorithms** — `collapse.ts` (`detectRuns`, `detectBranchRollups`, `applyCollapse`), `assignLanes` (exported from `CommitGraph.tsx`: tight packing, trunk-in-lane-0, merge first-parent lane), `branches.ts` (`defaultVisibility`, `shownBranchNames`). These are pure functions — unit-test them directly, no DOM.
+- **Not (yet) tested:** React components / DOM and the app shell — verified via build + manual for now. Prefer extracting pure logic out of components so it can be unit-tested (as with `assignLanes`, `collapse.ts`).
+
+**Where:** Rust tests are colocated in `#[cfg(test)]` modules. Frontend tests are colocated `*.test.ts` next to the source, run under **Vitest** (node environment; `ui/vitest.config.ts`).
+
+**Conventions:** tests must be deterministic and offline — no network, no reliance on the developer's real repos/HOME. Build git fixtures in temp dirs. Use fixed timestamps for commits so ordering/window assertions are stable.
+
+**How to run:**
+```bash
+mise run test          # everything (Rust + frontend)
+mise run test-server   # cargo test --workspace
+mise run test-ui       # vitest
+mise run coverage-ui   # frontend coverage (v8)
+mise run coverage-server  # Rust coverage (needs: cargo install cargo-llvm-cov)
+```
+
+**CI:** `.github/workflows/build.yml` has a `test` job that runs both suites with
+coverage on every push/PR (fast — no bundling) and uploads coverage as artifacts.
+The 3-OS `build` jobs declare `needs: test`, so nothing is built/released unless
+tests pass; the build itself only runs on version tags or manual dispatch.
