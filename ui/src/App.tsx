@@ -424,17 +424,29 @@ export default function App() {
               onChange={(since, until) => setTimeWindow({ since, until })}
             />
           )}
-          <div className="relative flex flex-col flex-1 min-w-0">
-            {/* Active time-window breadcrumb + orientation + clear */}
-            {timeWindow && timeBounds && (
+          <div className="flex flex-col flex-1 min-w-0">
+            {/* Status bar — always shown when a graph is loaded. Range + counts,
+                and a Home button (reset time + jump to HEAD). Sits in normal flow
+                above the graph so the absolute controls overlay doesn't cover it. */}
+            {graph && timeBounds && (
               <WindowBanner
-                since={timeWindow.since}
-                until={timeWindow.until}
-                newestTs={timeBounds.newest}
-                commitCount={graph?.nodes.length ?? 0}
-                onClear={() => setTimeWindow(null)}
+                newest={timeWindow?.until ?? timeBounds.newest}
+                oldest={timeWindow?.since ?? timeBounds.oldest}
+                shownCount={graph.nodes.length}
+                totalCount={graph.nodes.length + (graph.before_count ?? 0) + (graph.after_count ?? 0)}
+                beforeCount={graph.before_count ?? 0}
+                afterCount={graph.after_count ?? 0}
+                onHome={() => {
+                  // Reset any time filter and jump to HEAD (main/master fallback).
+                  setTimeWindow(null);
+                  const head =
+                    graph.refs.find((r) => r.is_head) ??
+                    graph.refs.find((r) => r.name === "main" || r.name === "master");
+                  if (head) setJumpToOid(head.oid);
+                }}
               />
             )}
+            <div className="relative flex flex-col flex-1 min-h-0">
             {/* Graph controls overlay: find box + branch control toggle */}
             {graph && (
               <div className="absolute top-2 left-2 z-20 flex items-center gap-2">
@@ -468,6 +480,7 @@ export default function App() {
               </div>
             ) : graph ? (
               <CommitGraph
+                key={repoPath}
                 graph={graph}
                 status={status}
                 selectedOid={selectedOid}
@@ -477,6 +490,7 @@ export default function App() {
                 onJumpConsumed={() => setJumpToOid(null)}
               />
             ) : null}
+            </div>
           </div>
         </div>
 

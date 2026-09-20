@@ -110,6 +110,10 @@ export interface GraphResponse {
   nodes: CommitNode[];
   edges: CommitEdge[];
   refs: RefLabel[];
+  /** Visible-branch commits older than the window's start (hidden below). */
+  before_count: number;
+  /** Visible-branch commits newer than the window's end (hidden above). */
+  after_count: number;
 }
 
 export interface TimeBounds {

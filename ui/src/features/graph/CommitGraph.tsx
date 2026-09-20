@@ -532,6 +532,21 @@ export default function CommitGraph({
     setEdges(allEdges);
   }, [allNodes, allEdges, setNodes, setEdges]);
 
+  // Initial viewport, computed once: "home" = HEAD (or the top of the graph)
+  // near the top-left with a little padding. This makes the default state land
+  // on HEAD without any imperative jump after render.
+  const initialViewport = useMemo(() => {
+    const homeId = (headOid && indexByOid.has(headOid)) ? headOid : renderOrder[0];
+    const zoom = 0.9;
+    if (!homeId) return { x: 40, y: 40, zoom };
+    const nodeX = X_BASE + (lanes.get(homeId) ?? 0) * LANE_WIDTH;
+    const nodeY = Y_BASE + (indexByOid.get(homeId) ?? 0) * ROW_HEIGHT;
+    // Place the home node ~40px from the top-left of the pane.
+    return { x: 40 - nodeX * zoom, y: 40 - nodeY * zoom, zoom };
+    // Compute once on mount; later navigation uses setCenter/fitView.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // React Flow instance (captured on init) for imperative centering on jump.
   const rfRef = React.useRef<ReactFlowInstance | null>(null);
 
@@ -584,7 +599,7 @@ export default function CommitGraph({
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
         nodeTypes={nodeTypes}
-        fitView
+        defaultViewport={initialViewport}
         fitViewOptions={{ padding: 0.15, minZoom: 0.02, maxZoom: 1.2 }}
         minZoom={0.02}
         maxZoom={1.5}
