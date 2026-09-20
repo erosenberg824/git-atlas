@@ -154,9 +154,14 @@ fn collect_refs(repo: &Repository) -> Result<Vec<RefLabel>, AppError> {
 
     for name in ref_names {
         let reference = repo.find_reference(&name).map_err(AppError::Git)?;
-        let target_oid = match reference.target() {
-            Some(oid) => oid,
-            None => continue,
+        // Peel the reference to the commit it ultimately points at. This is
+        // essential for ANNOTATED tags, whose direct target is the tag object
+        // (not a commit) — using target() there would attach the badge to a
+        // non-existent node. peel_to_commit() resolves lightweight tags,
+        // annotated tags, and branches alike to the underlying commit OID.
+        let target_oid = match reference.peel_to_commit() {
+            Ok(commit) => commit.id(),
+            Err(_) => continue, // e.g. a ref that doesn't resolve to a commit
         };
 
         let (short_name, kind) = if name.starts_with("refs/heads/") {
