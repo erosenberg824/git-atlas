@@ -28,6 +28,9 @@ pub struct RefLabel {
     pub oid: String,
     pub kind: RefKind,
     pub is_head: bool,
+    /// Commit time (unix seconds) of the ref's target commit — lets the client
+    /// rank branches by recency (for the "recent branches" default visibility).
+    pub tip_ts: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +50,7 @@ pub fn build_graph(
     limit: usize,
     since: Option<i64>,
     until: Option<i64>,
+    seed_refs: Option<&[String]>,
 ) -> Result<(Vec<CommitNode>, Vec<CommitEdge>, Vec<RefLabel>), AppError> {
     let mut revwalk = repo.revwalk().map_err(AppError::Git)?;
     revwalk
@@ -59,6 +63,28 @@ pub fn build_graph(
             .revparse_single(s)
             .map_err(|_| AppError::NotFound(format!("ref not found: {s}")))?;
         revwalk.push(obj.id()).map_err(AppError::Git)?;
+    } else if let Some(refs) = seed_refs.filter(|r| !r.is_empty()) {
+        // Seed only from the caller-selected refs (branch scoping). Each is
+        // peeled to a commit; unresolvable/empty refs are skipped. If none
+        // resolve, fall through to an empty graph rather than erroring.
+        let mut pushed = 0;
+        for name in refs {
+            if let Ok(reference) = repo
+                .revparse_single(name)
+                .or_else(|_| repo.revparse_single(&format!("refs/heads/{name}")))
+                .or_else(|_| repo.revparse_single(&format!("refs/remotes/{name}")))
+            {
+                if let Ok(commit) = reference.peel_to_commit() {
+                    if revwalk.push(commit.id()).is_ok() {
+                        pushed += 1;
+                    }
+                }
+            }
+        }
+        if pushed == 0 {
+            let refs = collect_refs(repo)?;
+            return Ok((Vec::new(), Vec::new(), refs));
+        }
     } else {
         // A repository with no commits has an unborn HEAD (e.g. refs/heads/main
         // that doesn't exist yet). push_head() would fail with a Reference error,
@@ -181,11 +207,13 @@ fn collect_refs(repo: &Repository) -> Result<Vec<RefLabel>, AppError> {
     // HEAD
     if let Ok(head) = repo.head() {
         if let Some(target) = head.target() {
+            let tip_ts = repo.find_commit(target).ok().map(|c| c.time().seconds());
             labels.push(RefLabel {
                 name: "HEAD".into(),
                 oid: target.to_string(),
                 kind: RefKind::Head,
                 is_head: true,
+                tip_ts,
             });
         }
     }
@@ -210,8 +238,8 @@ fn collect_refs(repo: &Repository) -> Result<Vec<RefLabel>, AppError> {
         // (not a commit) — using target() there would attach the badge to a
         // non-existent node. peel_to_commit() resolves lightweight tags,
         // annotated tags, and branches alike to the underlying commit OID.
-        let target_oid = match reference.peel_to_commit() {
-            Ok(commit) => commit.id(),
+        let (target_oid, tip_ts) = match reference.peel_to_commit() {
+            Ok(commit) => (commit.id(), Some(commit.time().seconds())),
             Err(_) => continue, // e.g. a ref that doesn't resolve to a commit
         };
 
@@ -232,6 +260,7 @@ fn collect_refs(repo: &Repository) -> Result<Vec<RefLabel>, AppError> {
             oid: target_oid.to_string(),
             kind,
             is_head,
+            tip_ts,
         });
     }
 
