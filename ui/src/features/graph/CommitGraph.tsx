@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -15,6 +15,8 @@ import {
 import type { CommitNode, CommitEdge, RefLabel, GraphResponse, StatusSummary } from "../../api/client";
 import CommitNodeComponent from "./CommitNodeComponent";
 import SpecialNodeComponent from "./SpecialNodeComponent";
+import RunNodeComponent from "./RunNodeComponent";
+import { detectRuns, applyCollapse, isCollapsedRunId } from "./collapse";
 
 interface CommitGraphProps {
   graph: GraphResponse;
@@ -34,6 +36,7 @@ export const stashIndexFromId = (id: string) => Number(id.slice("__stash__".leng
 const nodeTypes: NodeTypes = {
   commit: CommitNodeComponent,
   special: SpecialNodeComponent,
+  run: RunNodeComponent,
 };
 
 /**
@@ -112,18 +115,72 @@ export default function CommitGraph({
     return map;
   }, [graph.refs]);
 
-  const lanes = useMemo(
-    () => assignLanes(graph.nodes, graph.edges),
-    [graph.nodes, graph.edges]
-  );
+  // ── Collapse/expand of long linear runs ─────────────────────────────────
+  // Which run ids the user has explicitly expanded (others fold by default).
+  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
 
-  // Row index of each commit oid, for positioning pseudo-nodes relative to
-  // real commits (e.g. the working node just above its base commit).
-  const indexByOid = useMemo(() => {
-    const m = new Map<string, number>();
-    graph.nodes.forEach((c, i) => m.set(c.oid, i));
+  const nodeByOid = useMemo(() => {
+    const m = new Map<string, CommitNode>();
+    for (const n of graph.nodes) m.set(n.oid, n);
     return m;
   }, [graph.nodes]);
+
+  const runs = useMemo(
+    () => detectRuns(graph.nodes, graph.edges, refsByOid, selectedOid),
+    [graph.nodes, graph.edges, refsByOid, selectedOid]
+  );
+
+  const collapsed = useMemo(
+    () => applyCollapse(graph.nodes, graph.edges, runs, expandedRuns, nodeByOid),
+    [graph.nodes, graph.edges, runs, expandedRuns, nodeByOid]
+  );
+
+  // Effective node/edge lists after collapsing — everything downstream (lanes,
+  // positions, flow nodes/edges) operates on these.
+  const effNodes = collapsed.nodes;
+  const effEdges = collapsed.edges;
+  const runNodes = collapsed.runNodes;
+
+  const expandRun = useCallback((id: string) => {
+    setExpandedRuns((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  }, []);
+
+  const lanes = useMemo(
+    () => assignLanes(effNodes, effEdges),
+    [effNodes, effEdges]
+  );
+
+  // Combined render order: walk the ORIGINAL graph order; when we hit a commit
+  // that folded into a run, emit the run node once (at the position of its
+  // newest member) and skip the rest. This gives run nodes a row index inline
+  // with the surrounding commits.
+  const renderOrder = useMemo(() => {
+    const order: string[] = [];
+    const emittedRun = new Set<string>();
+    for (const n of graph.nodes) {
+      const runId = collapsed.foldedInto.get(n.oid);
+      if (runId) {
+        if (!emittedRun.has(runId)) {
+          order.push(runId);
+          emittedRun.add(runId);
+        }
+      } else {
+        order.push(n.oid);
+      }
+    }
+    return order;
+  }, [graph.nodes, collapsed.foldedInto]);
+
+  // Row index of each rendered id (commit oid OR run id).
+  const indexByOid = useMemo(() => {
+    const m = new Map<string, number>();
+    renderOrder.forEach((id, i) => m.set(id, i));
+    return m;
+  }, [renderOrder]);
 
   const laneOf = (oid: string) => lanes.get(oid) ?? 0;
   const posFor = (oid: string) => {
@@ -141,24 +198,52 @@ export default function CommitGraph({
     return head?.oid ?? graph.nodes[0]?.oid ?? null;
   }, [graph.refs, graph.nodes]);
 
+  // Lane for a run node: inherit from a neighboring commit (runs are single-lane
+  // by construction). Look at the run's parent/child in the effective edges.
+  const runLane = (runId: string): number => {
+    for (const e of effEdges) {
+      if (e.source === runId && lanes.has(e.target)) return lanes.get(e.target)!;
+      if (e.target === runId && lanes.has(e.source)) return lanes.get(e.source)!;
+    }
+    return 0;
+  };
+
   const flowNodes: Node[] = useMemo(
     () =>
-      graph.nodes.map((commit, index) => ({
-        id: commit.oid,
-        type: "commit",
-        position: {
-          x: X_BASE + (lanes.get(commit.oid) ?? 0) * LANE_WIDTH,
-          y: Y_BASE + index * ROW_HEIGHT,
-        },
-        data: {
-          commit,
-          refs: refsByOid.get(commit.oid) ?? [],
-          selected: commit.oid === selectedOid,
-          onSelect: onSelectCommit,
-        },
-        selected: commit.oid === selectedOid,
-      })),
-    [graph.nodes, lanes, refsByOid, selectedOid, onSelectCommit]
+      renderOrder.map((id, index) => {
+        const y = Y_BASE + index * ROW_HEIGHT;
+        const runData = runNodes.get(id);
+        if (runData) {
+          // Collapsed run summary node.
+          return {
+            id,
+            type: "run",
+            position: { x: X_BASE + runLane(id) * LANE_WIDTH, y },
+            data: {
+              ...runData,
+              selected: id === selectedOid,
+              onExpand: expandRun,
+            },
+            selected: id === selectedOid,
+          } as Node;
+        }
+        // Regular commit node.
+        const commit = nodeByOid.get(id)!;
+        return {
+          id,
+          type: "commit",
+          position: { x: X_BASE + (lanes.get(id) ?? 0) * LANE_WIDTH, y },
+          data: {
+            commit,
+            refs: refsByOid.get(id) ?? [],
+            selected: id === selectedOid,
+            onSelect: onSelectCommit,
+          },
+          selected: id === selectedOid,
+        } as Node;
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [renderOrder, lanes, refsByOid, selectedOid, onSelectCommit, runNodes, nodeByOid, effEdges]
   );
 
   // Working-tree pseudo-node (working + staged) + one node per stash.
@@ -221,15 +306,15 @@ export default function CommitGraph({
 
   const flowEdges: Edge[] = useMemo(
     () =>
-      graph.edges
+      effEdges
         // Defensive: React Flow throws (blanking the whole canvas) if an edge
-        // references a node that isn't present. Drop any such dangling edges —
-        // e.g. a parent that fell outside the commit `limit` window.
+        // references a node that isn't present. Drop any such dangling edges.
         .filter((e) => indexByOid.has(e.source) && indexByOid.has(e.target))
         .map((e) => {
         // source = parent (lower on screen), target = child (higher on screen).
-        const sourceLane = lanes.get(e.source) ?? 0;
-        const targetLane = lanes.get(e.target) ?? 0;
+        // Run nodes aren't in `lanes` (they replace a linear run) — resolve via runLane.
+        const sourceLane = lanes.get(e.source) ?? (isCollapsedRunId(e.source) ? runLane(e.source) : 0);
+        const targetLane = lanes.get(e.target) ?? (isCollapsedRunId(e.target) ? runLane(e.target) : 0);
 
         // Same lane → straight vertical: parent emits from its top, child
         // receives at its bottom. Different lanes (branch/merge) → route through
@@ -258,7 +343,8 @@ export default function CommitGraph({
           markerEnd: { type: MarkerType.ArrowClosed, color: "#30363d" },
         };
       }),
-    [graph.edges, lanes, indexByOid]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [effEdges, lanes, indexByOid]
   );
 
   // Dashed edges connecting pseudo-nodes to the commits they build on.
@@ -272,7 +358,7 @@ export default function CommitGraph({
         source: WORKING_NODE_ID,
         target: headOid,
         sourceHandle: "s-bottom",
-        targetHandle: "t-bottom",
+        targetHandle: "t-top",
         type: "default",
         style: { stroke: "#2f855a", strokeWidth: 2, strokeDasharray: "4 3" },
         markerEnd: { type: MarkerType.ArrowClosed, color: "#2f855a" },
@@ -317,9 +403,14 @@ export default function CommitGraph({
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
-      onSelectCommit(node.id);
+      // Clicking a collapsed run expands it; otherwise select the commit.
+      if (isCollapsedRunId(node.id)) {
+        expandRun(node.id);
+      } else {
+        onSelectCommit(node.id);
+      }
     },
-    [onSelectCommit]
+    [onSelectCommit, expandRun]
   );
 
   return (
