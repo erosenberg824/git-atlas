@@ -6,6 +6,10 @@ node = "22.19.0"
 RUST_LOG = "git_atlas=debug,tower_http=debug"
 # Point Cargo to the workspace root
 CARGO_MANIFEST_DIR = "{{config_root}}"
+# Fixed dev port: the server rebinds this on every restart, so Vite's proxy
+# target (which reads ATLAS_PORT first) stays valid across server rebuilds —
+# otherwise a random port on restart would break the proxy until Vite restarts.
+ATLAS_PORT = "7842"
 
 [tasks.dev-server]
 description = "Run the Rust backend server in watch mode (requires cargo-watch)"

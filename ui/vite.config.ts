@@ -74,6 +74,27 @@ export default defineConfig(() => ({
         changeOrigin: true,
         // Proxy WebSocket upgrades too (used by /api/v1/events live updates).
         ws: true,
+        // Don't let a transient upstream outage (the Rust server restarting on
+        // rebuild) crash the Vite dev server. Swallow proxy errors gracefully;
+        // the client retries (API calls + the /events socket auto-reconnect).
+        configure: (proxy) => {
+          proxy.on("error", (err, _req, res) => {
+            // eslint-disable-next-line no-console
+            console.warn(`[vite proxy] upstream error (server restarting?): ${err.message}`);
+            // For HTTP responses, reply 503 instead of throwing; ignore for WS.
+            const httpRes = res as import("http").ServerResponse | undefined;
+            if (httpRes && "writeHead" in httpRes && !httpRes.headersSent) {
+              try {
+                httpRes.writeHead(503, { "Content-Type": "application/json" });
+                httpRes.end('{"error":"server unavailable (restarting)"}');
+              } catch {
+                /* socket already gone */
+              }
+            }
+          });
+          // WebSocket upstream errors: log, let the client reconnect.
+          proxy.on("econnreset", () => {});
+        },
       },
     },
   },
