@@ -209,6 +209,27 @@ ATLAS_PORT=7842 ./target/release/git-atlas   # run your own server
 ATLAS_PORT=7842 open -a git-atlas                    # app uses it instead of the sidecar
 ```
 
+### macOS releases: signing & checksum verification
+
+The macOS app is **ad-hoc signed** in CI (`bundle.macOS.signingIdentity: "-"`). Ad-hoc signing needs
+no paid Apple Developer account and lets macOS verify the bundle hasn't been modified after signing —
+but it is **not** Developer-ID signed or notarized, so Gatekeeper shows an "unidentified developer"
+warning on first launch. To open it:
+
+1. Download the `.dmg` from the GitHub release.
+2. Verify its SHA-256 against the release's `SHA256SUMS-macos-latest.txt`:
+   ```bash
+   shasum -a 256 <downloaded>.dmg      # compare with the matching line in SHA256SUMS-macos-latest.txt
+   ```
+3. Open the disk image, drag `git-atlas.app` to Applications.
+4. First launch: right-click `git-atlas.app` → **Open** → confirm **Open**. macOS remembers the approval.
+
+The release workflow publishes `SHA256SUMS-<os>.txt` for every platform's installers. Checksums guard
+against corruption/tampering of the download (not proof of *who* built it — download the checksum file
+from the same release). **Notarized releases** (removing the Gatekeeper warning) require a paid Apple
+Developer membership + Developer ID certificate + notarization; until then, ad-hoc signing plus
+checksum verification is the supported process.
+
 ## API
 
 The server exposes a versioned REST API at `http://localhost:PORT/api/v1/`.

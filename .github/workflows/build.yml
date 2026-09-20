@@ -226,8 +226,9 @@ jobs:
           prerelease: false
 
       # ── SHA-256 checksums for the built installers ─────────────────────────
-      # Per docs/macos-releases.md: publish SHA256SUMS-<os>.txt so users can
-      # verify downloads. `shell: bash` works on all three runners.
+      # See the README "macOS releases: signing & checksum verification" section:
+      # publish SHA256SUMS-<os>.txt so users can verify downloads. `shell: bash`
+      # works on all three runners.
       - name: Generate checksums
         shell: bash
         run: |
