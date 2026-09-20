@@ -65,4 +65,4 @@ rust-embed = { version = "8.5.0" }
 mime_guess = { version = "2.0.5" }
 
 # Filesystem watching (live updates when the repo's .git changes)
-notify = { version = "6.1.1" }
+notify = { version = "8.2.0" }
