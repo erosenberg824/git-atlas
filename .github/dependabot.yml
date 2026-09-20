@@ -1,12 +1,42 @@
 version: 2
 
 updates:
+  # ── Rust (workspace) ─────────────────────────────────────────────────────
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "rust"]
+    commit-message:
+      prefix: "cargo"
+    groups:
+      # Roll routine minor/patch bumps into a single PR to cut noise; majors
+      # still come as individual PRs so they can be reviewed carefully.
+      minor-and-patch:
+        update-types: ["minor", "patch"]
 
+  # ── Frontend (npm) ───────────────────────────────────────────────────────
   - package-ecosystem: "npm"
     directory: "/ui"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "frontend"]
+    commit-message:
+      prefix: "npm"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # ── GitHub Actions (CI workflows) ────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        update-types: ["minor", "patch"]
