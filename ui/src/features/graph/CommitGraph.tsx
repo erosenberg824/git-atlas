@@ -221,7 +221,12 @@ export default function CommitGraph({
 
   const flowEdges: Edge[] = useMemo(
     () =>
-      graph.edges.map((e) => {
+      graph.edges
+        // Defensive: React Flow throws (blanking the whole canvas) if an edge
+        // references a node that isn't present. Drop any such dangling edges —
+        // e.g. a parent that fell outside the commit `limit` window.
+        .filter((e) => indexByOid.has(e.source) && indexByOid.has(e.target))
+        .map((e) => {
         // source = parent (lower on screen), target = child (higher on screen).
         const sourceLane = lanes.get(e.source) ?? 0;
         const targetLane = lanes.get(e.target) ?? 0;
@@ -253,7 +258,7 @@ export default function CommitGraph({
           markerEnd: { type: MarkerType.ArrowClosed, color: "#30363d" },
         };
       }),
-    [graph.edges, lanes]
+    [graph.edges, lanes, indexByOid]
   );
 
   // Dashed edges connecting pseudo-nodes to the commits they build on.
