@@ -121,7 +121,7 @@ jobs:
 
       # Rust build cache keyed on the workspace + OS.
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
