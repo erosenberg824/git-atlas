@@ -63,7 +63,7 @@ const nodeTypes: NodeTypes = {
  * `order` is newest-first (topological). `edges` are parent(source)→child(target)
  * among rendered ids. `trunkTip` is the id that should anchor lane 0.
  */
-function assignLanes(
+export function assignLanes(
   order: string[],
   edges: { source: string; target: string }[],
   trunkTip: string | null,
