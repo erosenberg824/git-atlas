@@ -276,3 +276,177 @@ fn collect_refs(repo: &Repository) -> Result<Vec<RefLabel>, AppError> {
 
     Ok(labels)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use git2::{Repository, Signature, Time};
+    use std::path::PathBuf;
+
+    /// Create a fresh empty repo in a unique temp directory.
+    fn temp_repo() -> (Repository, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "git-atlas-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        (repo, dir)
+    }
+
+    /// Commit a file change on the current HEAD with a fixed timestamp (unix secs).
+    /// Returns the new commit OID.
+    fn commit(repo: &Repository, msg: &str, ts: i64) -> git2::Oid {
+        let dir = repo.workdir().unwrap();
+        std::fs::write(dir.join("f.txt"), format!("{msg}\n")).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("f.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = Signature::new("t", "t@t.co", &Time::new(ts, 0)).unwrap();
+        let parents: Vec<git2::Commit> = match repo.head() {
+            Ok(h) => vec![h.peel_to_commit().unwrap()],
+            Err(_) => vec![],
+        };
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parent_refs).unwrap()
+    }
+
+    fn cleanup(dir: PathBuf) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn empty_repo_yields_empty_graph() {
+        let (repo, dir) = temp_repo();
+        let (nodes, edges, _refs, before, after) =
+            build_graph(&repo, None, 500, None, None, None).unwrap();
+        assert!(nodes.is_empty());
+        assert!(edges.is_empty());
+        assert_eq!((before, after), (0, 0));
+        cleanup(dir);
+    }
+
+    #[test]
+    fn linear_history_nodes_and_edges() {
+        let (repo, dir) = temp_repo();
+        commit(&repo, "c1", 1000);
+        commit(&repo, "c2", 2000);
+        commit(&repo, "c3", 3000);
+        let (nodes, edges, _refs, _b, _a) =
+            build_graph(&repo, None, 500, None, None, None).unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(edges.len(), 2); // c1->c2, c2->c3
+        cleanup(dir);
+    }
+
+    #[test]
+    fn all_refs_seeded_includes_non_head_branch() {
+        let (repo, dir) = temp_repo();
+        let base = commit(&repo, "base", 1000);
+        // feature branch off base with a unique commit
+        let base_commit = repo.find_commit(base).unwrap();
+        repo.branch("feature", &base_commit, false).unwrap();
+        repo.set_head("refs/heads/feature").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force())).unwrap();
+        commit(&repo, "feat-only", 2000);
+        // back to the original branch (master/main)
+        repo.set_head("refs/heads/master")
+            .or_else(|_| repo.set_head("refs/heads/main"))
+            .unwrap();
+
+        let (nodes, _e, refs, _b, _a) =
+            build_graph(&repo, None, 500, None, None, None).unwrap();
+        // Seeding from ALL refs should include the feature-only commit.
+        let summaries: Vec<&str> = nodes.iter().map(|n| n.summary.as_str()).collect();
+        assert!(summaries.contains(&"feat-only"), "expected feat-only, got {summaries:?}");
+        assert!(refs.iter().any(|r| r.name == "feature"));
+        cleanup(dir);
+    }
+
+    #[test]
+    fn annotated_and_lightweight_tags_attach_to_commits() {
+        let (repo, dir) = temp_repo();
+        let c1 = commit(&repo, "c1", 1000);
+        let c2 = commit(&repo, "c2", 2000);
+        // lightweight tag on c1
+        repo.tag_lightweight("light", &repo.find_object(c1, None).unwrap(), false).unwrap();
+        // annotated tag on c2 (its ref target is the tag object, not the commit)
+        let sig = Signature::new("t", "t@t.co", &Time::new(2000, 0)).unwrap();
+        repo.tag("annot", &repo.find_object(c2, None).unwrap(), &sig, "annotated", false).unwrap();
+
+        let (nodes, _e, refs, _b, _a) =
+            build_graph(&repo, None, 500, None, None, None).unwrap();
+        let node_ids: std::collections::HashSet<&str> =
+            nodes.iter().map(|n| n.oid.as_str()).collect();
+        for name in ["light", "annot"] {
+            let r = refs.iter().find(|r| r.name == name).expect("tag ref present");
+            // Both must peel to a real commit node (annotated tag must NOT point
+            // at the tag object).
+            assert!(node_ids.contains(r.oid.as_str()), "{name} should attach to a commit node");
+        }
+        cleanup(dir);
+    }
+
+    #[test]
+    fn time_window_filters_and_counts() {
+        let (repo, dir) = temp_repo();
+        for i in 1..=6 {
+            commit(&repo, &format!("c{i}"), i as i64 * 1000);
+        }
+        // window [2500, 4500] -> includes c3(3000), c4(4000)
+        let (nodes, _e, _r, before, after) =
+            build_graph(&repo, None, 500, Some(2500), Some(4500), None).unwrap();
+        let mut summaries: Vec<&str> = nodes.iter().map(|n| n.summary.as_str()).collect();
+        summaries.sort();
+        assert_eq!(summaries, vec!["c3", "c4"]);
+        assert_eq!(before, 2, "c1,c2 older than window"); // older
+        assert_eq!(after, 2, "c5,c6 newer than window"); // newer
+        cleanup(dir);
+    }
+
+    #[test]
+    fn ref_scoping_limits_to_selected_branch() {
+        let (repo, dir) = temp_repo();
+        let base = commit(&repo, "base", 1000);
+        let base_commit = repo.find_commit(base).unwrap();
+        repo.branch("feature", &base_commit, false).unwrap();
+        repo.set_head("refs/heads/feature").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force())).unwrap();
+        commit(&repo, "feat-only", 2000);
+        let main_name = if repo.find_reference("refs/heads/master").is_ok() {
+            "master"
+        } else {
+            "main"
+        };
+        repo.set_head(&format!("refs/heads/{main_name}")).unwrap();
+
+        // Scope to the main branch only -> feat-only excluded.
+        let seed = vec![main_name.to_string()];
+        let (nodes, _e, _r, _b, _a) =
+            build_graph(&repo, None, 500, None, None, Some(&seed)).unwrap();
+        let summaries: Vec<&str> = nodes.iter().map(|n| n.summary.as_str()).collect();
+        assert!(summaries.contains(&"base"));
+        assert!(!summaries.contains(&"feat-only"), "feature commit should be scoped out");
+        cleanup(dir);
+    }
+
+    #[test]
+    fn dangling_edges_dropped_at_limit() {
+        let (repo, dir) = temp_repo();
+        for i in 1..=5 {
+            commit(&repo, &format!("c{i}"), i as i64 * 1000);
+        }
+        // limit=2 -> only 2 nodes; the older parent of the 2nd is outside the
+        // set, so its edge must be dropped (no edge referencing a missing node).
+        let (nodes, edges, _r, _b, _a) =
+            build_graph(&repo, None, 2, None, None, None).unwrap();
+        assert_eq!(nodes.len(), 2);
+        let ids: std::collections::HashSet<&str> = nodes.iter().map(|n| n.oid.as_str()).collect();
+        for e in &edges {
+            assert!(ids.contains(e.source.as_str()) && ids.contains(e.target.as_str()));
+        }
+        cleanup(dir);
+    }
+}
