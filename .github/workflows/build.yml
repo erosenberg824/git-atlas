@@ -51,7 +51,17 @@ jobs:
       # and require the bundled sidecar binary to exist. (The app crate's logging
       # tests still run in local `cargo test`.)
       - name: Rust tests with coverage
-        run: cargo llvm-cov -p git-atlas --lcov --output-path lcov-rust.info
+        run: |
+          # Run instrumented tests once (no report), then emit both an lcov file
+          # and a human-readable summary from the same coverage data.
+          cargo llvm-cov --no-report -p git-atlas
+          cargo llvm-cov report -p git-atlas --lcov --output-path lcov-rust.info
+          {
+            echo "### Rust coverage (server crate)";
+            echo '```';
+            cargo llvm-cov report -p git-atlas --summary-only || true;
+            echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install frontend deps
         working-directory: ui
@@ -59,9 +69,24 @@ jobs:
 
       - name: Frontend tests with coverage
         working-directory: ui
-        run: npm test -- --coverage
+        run: |
+          {
+            echo "### Frontend coverage (Vitest)";
+            echo '```';
+            npm test -- --coverage 2>&1 | sed -n '/Coverage report/,/^=*$/p' | tail -n +1;
+            echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload coverage
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov-rust.info,ui/coverage/lcov.info
+          fail_ci_if_error: false
+          # For public repos no token is needed; for private repos set the
+          # CODECOV_TOKEN repository secret and it's picked up here.
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload coverage artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
