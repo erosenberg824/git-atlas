@@ -9,6 +9,9 @@ A local-first tool for visualising and searching git repositories. Browse commit
 - **Commit graph** — interactive DAG with branch/tag labels, powered by React Flow
 - **Live updates** — the graph refreshes automatically as the repo changes (commits, checkouts, fetches, stashes, staging), via a filesystem watcher + WebSocket
 - **Collapse linear runs** — long chains of linear commits fold into a single summary node (click to expand)
+- **Branch visibility control** — show/hide/collapse branches (tri-state); by default shows the current branch plus recent branches, others hidden
+- **Virtual squash** — collapse a whole branch's unique commits into a single node, expandable on demand
+- **Find** — jump the graph to any branch or tag by name
 - **Time scrubber** — a vertical time-window control to pan/zoom the graph through history
 - **Working tree, staged & stashes** — view uncommitted, staged, and stashed changes as nodes on the graph (read-only)
 - **Diff viewer** — unified diff for any commit or between any two commits
@@ -103,14 +106,24 @@ Run the backend server and the Vite dev server in separate terminals:
 ```bash
 # Terminal 1 — Rust backend (auto-reloads with cargo-watch if installed)
 mise run dev-server
-# or: cargo run --bin git-atlas
+# or, without file-watching:
+mise run run-server
 
-# Terminal 2 — Vite frontend dev server
+# Terminal 2 — Vite frontend dev server (hot-reloads UI changes instantly)
 mise run dev-ui
-# or: cd ui && npm run dev
 ```
 
-Then open http://localhost:1420 in a browser, or run the full Tauri dev app:
+Then open http://localhost:1420 — the Vite dev server proxies `/api/*` (and the
+`/events` WebSocket) to the Rust backend, so you never coordinate ports. UI edits
+hot-reload immediately; only Rust changes need the server to restart (automatic
+with `mise run dev-server` + `cargo-watch`, otherwise Ctrl+C and re-run).
+
+The dev tasks pin `ATLAS_PORT=7842` so the backend rebinds the same port on
+restart (keeping Vite's proxy valid across server rebuilds) and pass
+`--no-browser` (use the Vite tab at :1420, not the server port). Install the
+optional watcher with `cargo install cargo-watch --locked`.
+
+Or run the full Tauri dev app:
 
 ```bash
 mise run tauri-dev
@@ -206,7 +219,7 @@ The server exposes a versioned REST API at `http://localhost:PORT/api/v1/`.
 | `GET` | `/repo` | Get info about the open repository |
 | `GET` | `/repo/recent` | List recently opened repositories |
 | `GET` | `/status` | Working-tree status (staged/unstaged counts + stashes) |
-| `GET` | `/graph` | Commit DAG (nodes + edges + refs); supports `limit`, `start`, `since`, `until` |
+| `GET` | `/graph` | Commit DAG (nodes + edges + refs). Params: `limit`, `start`, `since`/`until` (time window), `refs` (comma-separated branches to scope to). Response also carries `before_count`/`after_count` (visible-branch commits hidden below/above a time window) |
 | `GET` | `/timebounds` | Newest/oldest commit timestamps + count (for the time scrubber) |
 | `GET` | `/commits/:oid` | Commit detail |
 | `GET` | `/diff/:oid` | Commit vs parent diff |
