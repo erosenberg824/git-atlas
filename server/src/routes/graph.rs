@@ -16,6 +16,9 @@ pub struct GraphQuery {
     pub since: Option<i64>,
     /// Only include commits with time <= until (unix seconds).
     pub until: Option<i64>,
+    /// Comma-separated ref names to seed the walk from (branch scoping). When
+    /// omitted, seeds from all refs.
+    pub refs: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,10 +38,16 @@ pub async fn get_graph(
     let start = query.start.clone();
     let since = query.since;
     let until = query.until;
+    let seed_refs: Option<Vec<String>> = query.refs.as_ref().map(|s| {
+        s.split(',')
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty())
+            .collect()
+    });
 
     let (nodes, edges, refs) = tokio::task::spawn_blocking(move || {
         let repo = git2::Repository::open(&path).map_err(crate::error::AppError::Git)?;
-        git_graph::build_graph(&repo, start.as_deref(), limit, since, until)
+        git_graph::build_graph(&repo, start.as_deref(), limit, since, until, seed_refs.as_deref())
     })
     .await
     .map_err(|e| crate::error::AppError::Internal(anyhow::anyhow!(e)))??;
