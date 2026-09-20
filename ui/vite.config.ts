@@ -72,6 +72,8 @@ export default defineConfig(() => ({
       "/api": {
         target: `http://localhost:${serverPort}`,
         changeOrigin: true,
+        // Proxy WebSocket upgrades too (used by /api/v1/events live updates).
+        ws: true,
       },
     },
   },
