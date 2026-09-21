@@ -2,6 +2,7 @@ import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { ChevronsUpDown } from "lucide-react";
 import type { CollapsedRunData } from "./collapse";
+import FoldedRefBadge from "./FoldedRefBadge";
 
 interface RunNodeProps extends CollapsedRunData {
   selected: boolean;
@@ -39,7 +40,7 @@ function RunNodeComponent({ data }: NodeProps) {
       onClick={() => d.onExpand(d.id)}
       title="Click to expand this run of commits"
       className={[
-        "px-3 py-2 rounded-md border border-dashed text-xs cursor-pointer min-w-[180px] max-w-[210px]",
+        "relative px-3 py-2 rounded-md border border-dashed text-xs cursor-pointer min-w-[180px] max-w-[210px]",
         "transition-colors duration-100 bg-[#161b22]",
         d.selected
           ? "border-purple-400 shadow-[0_0_0_2px_rgba(192,132,252,0.3)]"
@@ -51,11 +52,36 @@ function RunNodeComponent({ data }: NodeProps) {
       <Handle id="s-top" type="source" position={Position.Top} className="!bg-[#30363d] !border-0" />
       <Handle id="t-bottom" type="target" position={Position.Bottom} className="!bg-[#30363d] !border-0" />
 
-      {/* Header row: icon + label. `min-w-0` lets the label `truncate` engage so
-          a long branch name stays within the fixed-width node box (Defect 7);
-          the full label is available on hover via `title`. */}
-      <div className="flex items-center gap-1.5 mb-0.5 text-purple-200 font-semibold">
-        <ChevronsUpDown size={12} className="text-purple-300 shrink-0" />
+      {/* Expand affordance, top-right corner — matches the commit/merge collapse
+          control's position so the control does not jump between corners on
+          fold/expand. The whole node is already click-to-expand, so this is a
+          purely visual indicator (non-button span), avoiding a duplicate
+          handler; classes mirror CommitNodeComponent/MergeNodeComponent. */}
+      <span
+        aria-hidden
+        className="absolute top-1 right-1 z-10 rounded p-0.5 text-purple-300/80 hover:text-purple-200 hover:bg-purple-900/40"
+      >
+        <ChevronsUpDown size={11} />
+      </span>
+
+
+      {/* Folded-ref badges: refs carried by hidden members so a folded
+          branch/remote-branch/tag never silently disappears. Head refs render
+          solid, buried refs outline (styling alone conveys head-vs-buried).
+          Rendered ABOVE the count/range header; nothing shown when empty. */}
+      {d.foldedRefs && d.foldedRefs.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-1">
+          {d.foldedRefs.map((fr, i) => (
+            <FoldedRefBadge key={`${fr.ref.name}-${i}`} ref={fr.ref} buried={fr.buried} />
+          ))}
+        </div>
+      )}
+
+      {/* Header row: label. `min-w-0` lets the label `truncate` engage so a long
+          branch name stays within the fixed-width node box (Defect 7); the full
+          label is available on hover via `title`. `pr-5` reserves space so a
+          long truncated label does not slide under the top-right control. */}
+      <div className="flex items-center gap-1.5 mb-0.5 pr-5 text-purple-200 font-semibold">
         <span className="min-w-0 truncate" title={labelText}>
           {labelText}
         </span>

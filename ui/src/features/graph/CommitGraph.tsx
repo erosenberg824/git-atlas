@@ -18,7 +18,24 @@ import type { CommitNode, RefLabel, GraphResponse, StatusSummary } from "../../a
 import CommitNodeComponent from "./CommitNodeComponent";
 import SpecialNodeComponent from "./SpecialNodeComponent";
 import RunNodeComponent from "./RunNodeComponent";
-import { regionAround, regionsFromAnchors, autoCollapseAnchors, applyCollapse, isCollapsedRunId, anchorFromId, selectionForSummaryNode } from "./collapse";
+import MergeNodeComponent from "./MergeNodeComponent";
+import {
+  regionAround,
+  foldableNodeIds,
+  autoCollapseAnchors,
+  isCollapsedRunId,
+  isMergePathId,
+  parseMergePathId,
+  mergePathId,
+  mergeSecondaryPath,
+  anchorFromId,
+  selectionForSummaryNode,
+  leafTipVisibility,
+  resolveMergeAndRegionFold,
+  composeFoldSeed,
+  type MergeAffordance,
+  type ViewMode,
+} from "./collapse";
 
 interface CommitGraphProps {
   graph: GraphResponse;
@@ -49,6 +66,7 @@ const nodeTypes: NodeTypes = {
   commit: CommitNodeComponent,
   special: SpecialNodeComponent,
   run: RunNodeComponent,
+  merge: MergeNodeComponent,
 };
 
 /**
@@ -169,20 +187,33 @@ export default function CommitGraph({
     return map;
   }, [graph.refs]);
 
-  // ── On-demand contiguous-region collapse (Round 3) ────────────────────────
+  // ── On-demand contiguous-region collapse (Round 3) + merge default view ───
   // The fold unit is a contiguous region keyed on the CLICKED commit's stable
-  // oid (its anchor). Fold/expand state is anchor-keyed so it stays consistent
-  // as the graph shifts (Defect 1.9). This replaces the old linear-run +
-  // branch-rollup fold mechanism entirely (2.12); branch-visibility server-ref
-  // scoping is unchanged and lives in App.tsx (branches.ts), not here (3.11).
+  // oid (its anchor), OR a merge secondary path keyed on its stable merge oid
+  // (`mergePathId(M, k)`). Fold/expand state is anchor-keyed so it stays
+  // consistent as the graph shifts (Defect 1.9).
   //
-  //  - foldAnchors:  anchor oids currently folded (auto-seed on load + manual).
-  //  - userExpanded: anchors of auto-folded regions the user has opened.
-  // A region is rendered folded when its anchor is in foldAnchors AND not in
-  // userExpanded — a manual expand authoritatively wins over the auto seed, and
-  // a manual collapse (re-adding to foldAnchors, clearing userExpanded) wins
-  // back, so the fold→expand→collapse round-trip is reversible (Defect 4).
-  const [foldAnchors, setFoldAnchors] = useState<Set<string>>(new Set());
+  // The effective folded set is COMPOSED from two independent inputs so the
+  // view-mode toggle (task 8) can flip the merge default seed WITHOUT discarding
+  // the user's manual fold/expand state (Requirement 13.3):
+  //
+  //   • Default seeds — re-derived from the loaded graph on every graph change:
+  //       - regionSeed: long off-trunk linear regions (`autoCollapseAnchors`),
+  //         ALWAYS applied in both view modes.
+  //       - mergeSeed:  the merge leaf-tip default view (`leafTipVisibility`),
+  //         applied ONLY in "active" mode.
+  //   • User overrides — the user's manual actions, kept SEPARATE from the
+  //     seeds and NOT reset on a mere view-mode flip (only re-seeded on a graph
+  //     change, like the defaults):
+  //       - userCollapsed: ids the user manually folded (applied in both modes).
+  //       - userExpanded:  ids the user manually expanded (win over every fold).
+  //
+  // `composeFoldSeed` combines them:
+  //   effectiveFolded = (regionSeed ∪ activeMergeSeed ∪ userCollapsed) \ userExpanded
+  // A manual expand authoritatively wins over the seed and over a manual
+  // collapse, so the fold→expand→collapse round-trip stays reversible (Defect 4).
+  const [viewMode, setViewMode] = useState<ViewMode>("active");
+  const [userCollapsed, setUserCollapsed] = useState<Set<string>>(new Set());
   const [userExpanded, setUserExpanded] = useState<Set<string>>(new Set());
 
   const nodeByOid = useMemo(() => {
@@ -200,87 +231,201 @@ export default function CommitGraph({
     return head?.oid ?? graph.nodes[0]?.oid ?? null;
   }, [graph.refs, graph.nodes]);
 
-  // On load / whenever the graph changes, seed the auto-collapse anchors: every
-  // contiguous region >= AUTO_COLLAPSE_LEN EXCEPT regions on the HEAD trunk
-  // (2.13, reconciling 3.6). Resetting on graph change keeps the seed keyed to
-  // the current node set; manual fold/expand state is re-derived from anchors,
-  // which are stable oids, so a live-update graph shift doesn't desync it.
+  // On load / whenever the graph changes, RE-DERIVE the default seeds from the
+  // current node set and reset the user's manual overrides. Both seeds are
+  // stable string ids keyed on a stable oid (region anchor oid / merge oid), so
+  // a live-update graph shift / re-fetch doesn't desync the fold state — they're
+  // re-derived from anchors that persist across the window (6.3).
+  //
+  //   - regionSeed: long off-trunk linear regions auto-fold (Round 3), HEAD
+  //     trunk exempt (2.13). Applied in BOTH view modes.
+  //   - mergeSeed:  the merge default view (`leafTipVisibility`) folds every
+  //     merge whose secondary path is not a leaf line. Applied ONLY in "active"
+  //     mode (the view-mode toggle flips this on/off — 13.3).
+  //
+  // Manual fold/expand overrides layer on top via composeFoldSeed and are reset
+  // here (a genuine graph change) but NOT on a mere view-mode toggle.
+  const [regionSeed, setRegionSeed] = useState<Set<string>>(new Set());
+  const [mergeSeed, setMergeSeed] = useState<Set<string>>(new Set());
+
   useEffect(() => {
-    const seed = autoCollapseAnchors(
+    const region = autoCollapseAnchors(
       graph.nodes,
       graph.edges,
       headOid,
       refsByOid,
       AUTO_COLLAPSE_LEN,
     );
-    setFoldAnchors(new Set(seed));
+    const merge = leafTipVisibility(graph.nodes, graph.edges, graph.refs);
+    setRegionSeed(new Set(region));
+    setMergeSeed(merge);
+    setUserCollapsed(new Set());
     setUserExpanded(new Set());
-  }, [graph.nodes, graph.edges, headOid, refsByOid]);
+  }, [graph.nodes, graph.edges, graph.refs, headOid, refsByOid]);
 
-  // Effective folded anchors: folded unless the user expanded them.
-  const effectiveFolded = useMemo(() => {
-    const out = new Set<string>();
-    for (const a of foldAnchors) if (!userExpanded.has(a)) out.add(a);
-    return out;
-  }, [foldAnchors, userExpanded]);
-
-  // Build region groups from the effectively-folded anchors and apply the
-  // collapse. `applyCollapse` is reused UNCHANGED — because each region is a
-  // single contiguous chain with one entry + one exit edge, the reroute is
-  // exact and orphan-free (Defect 1.8).
-  const regionGroups = useMemo(
-    () => regionsFromAnchors(effectiveFolded, graph.nodes, graph.edges, refsByOid, selectedOid),
-    [effectiveFolded, graph.nodes, graph.edges, refsByOid, selectedOid]
+  // Effective folded ids: compose the default seeds (region always, merge only
+  // in "active" mode) with the user's manual overrides. A view-mode flip only
+  // changes whether `mergeSeed` participates — `userCollapsed`/`userExpanded`
+  // are unchanged, so per-merge manual state survives the toggle (13.3).
+  const effectiveFolded = useMemo(
+    () => composeFoldSeed(viewMode, regionSeed, mergeSeed, userCollapsed, userExpanded),
+    [viewMode, regionSeed, mergeSeed, userCollapsed, userExpanded],
   );
 
-  const collapsed = useMemo(
-    () => applyCollapse(graph.nodes, graph.edges, regionGroups, new Set<string>(), nodeByOid),
-    [graph.nodes, graph.edges, regionGroups, nodeByOid]
+  // Build the composed fold: merge secondary-path folds AND Round-3 region
+  // folds resolved in ONE pass, with merge folds taking precedence. The
+  // effectively-folded set carries BOTH kinds of stable ids; split it into
+  // merge-path ids and region anchors for the resolver. `resolveMergeAndRegionFold`:
+  //   - rebuilds each folded merge path's hide set (renderAnchor = merge oid,
+  //     Option A — no minted node) and computes the merge-hidden member set Hm,
+  //   - seeds regions ONLY over commits not in Hm (a merge-hidden commit is not
+  //     a region candidate — 7.1/7.2/7.4), keeping the two memberships disjoint,
+  //   - folds both kinds via `applyCollapse` (reused UNCHANGED) into one graph.
+  // Expanding a merge path drops its members from Hm, so those commits regain
+  // region candidacy on the next recompute (7.3) — no special handling needed.
+  const foldedMergePathIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const id of effectiveFolded) if (isMergePathId(id)) s.add(id);
+    return s;
+  }, [effectiveFolded]);
+
+  const regionAnchors = useMemo(() => {
+    const s = new Set<string>();
+    for (const id of effectiveFolded) if (!isMergePathId(id)) s.add(id);
+    return s;
+  }, [effectiveFolded]);
+
+  const resolved = useMemo(
+    () =>
+      resolveMergeAndRegionFold(
+        graph.nodes,
+        graph.edges,
+        refsByOid,
+        selectedOid,
+        foldedMergePathIds,
+        regionAnchors,
+      ),
+    [graph.nodes, graph.edges, refsByOid, selectedOid, foldedMergePathIds, regionAnchors]
   );
+
+  const collapsed = resolved.eff;
 
   // Effective edge list + region summary nodes after collapsing — everything
   // downstream (lanes, positions, flow nodes/edges) operates on these.
   const effEdges = collapsed.edges;
   const runNodes = collapsed.runNodes;
 
-  // Fold the contiguous region anchored at `oid` (manual collapse). Single fold
-  // entry point — structured so a future BranchControl per-branch fold can call
-  // it with a branch-derived anchor (2.14, picker wiring out of scope).
-  const collapseRegion = useCallback((oid: string) => {
-    setFoldAnchors((prev) => new Set(prev).add(oid));
-    setUserExpanded((prev) => {
-      if (!prev.has(oid)) return prev;
+  // Fold the contiguous region OR merge secondary path anchored at `anchorId`
+  // (manual collapse). `anchorId` is a stable id: a region anchor oid OR a
+  // `mergePathId(M,k)` (both stable-oid-derived). Recorded as a USER override
+  // (userCollapsed) separate from the default seed, so it survives a view-mode
+  // toggle (13.3). Single fold entry point for both kinds — the resolver keys
+  // off `isMergePathId` to route it.
+  //
+  // Selection-follow (Req 22 / Property 12): when the group being folded
+  // includes the currently selected commit, move selection onto the resulting
+  // summary node by re-selecting the fold's representative — its newest member
+  // `oids[0]`, matching `selectionForSummaryNode` and the existing expand path.
+  // Folds that do NOT contain the selected commit leave selection unchanged.
+  const collapseRegion = useCallback(
+    (anchorId: string) => {
+      setUserCollapsed((prev) => new Set(prev).add(anchorId));
+      setUserExpanded((prev) => {
+        if (!prev.has(anchorId)) return prev;
+        const next = new Set(prev);
+        next.delete(anchorId);
+        return next;
+      });
+
+      // Determine the folded group's members for `anchorId`, keyed on its id
+      // kind: a merge secondary path (`mergePathId`) vs a region anchor.
+      if (selectedOid === null) return;
+      let members: string[] | null | undefined;
+      const parsed = isMergePathId(anchorId) ? parseMergePathId(anchorId) : null;
+      if (parsed) {
+        members = mergeSecondaryPath(
+          parsed.mergeOid,
+          parsed.parentIndex,
+          graph.nodes,
+          graph.edges,
+        )?.oids;
+      } else {
+        members = regionAround(
+          anchorFromId(anchorId),
+          graph.nodes,
+          graph.edges,
+          refsByOid,
+        );
+      }
+      if (!members || members.length === 0) return;
+      // Re-select the representative (newest member) only when the fold hides
+      // the selected commit; `members[0]` = `selectionForSummaryNode` semantics.
+      if (members.includes(selectedOid)) onSelectCommit(members[0]);
+    },
+    [selectedOid, onSelectCommit, graph.nodes, graph.edges, refsByOid],
+  );
+
+  // Expand the region OR merge secondary path anchored at `anchorId` (records a
+  // USER expand override, clears any user collapse). A manual expand
+  // authoritatively wins over the default seed and a prior manual collapse via
+  // `composeFoldSeed`, so the whole group un-folds in one action and stays
+  // un-folded across re-renders and view-mode toggles (Defect 6 / 13.3).
+  const expandRegion = useCallback((anchorId: string) => {
+    setUserExpanded((prev) => new Set(prev).add(anchorId));
+    setUserCollapsed((prev) => {
+      if (!prev.has(anchorId)) return prev;
       const next = new Set(prev);
-      next.delete(oid);
+      next.delete(anchorId);
       return next;
     });
   }, []);
 
-  // Expand the region anchored at `oid` (removes from foldAnchors / records in
-  // userExpanded). Because one anchor id maps to the whole contiguous region,
-  // the entire group un-folds in one action (Defect 6, trivially satisfied).
-  const expandRegion = useCallback((oid: string) => {
-    setUserExpanded((prev) => new Set(prev).add(oid));
-    setFoldAnchors((prev) => {
-      if (!prev.has(oid)) return prev;
-      const next = new Set(prev);
-      next.delete(oid);
-      return next;
-    });
-  }, []);
+  // Toggle a single merge secondary path (mergeOid, parentIndex). Threaded onto
+  // merge node data so task 7's MergeNodeComponent can flip a path folded ⇄
+  // expanded via one call, keyed on the stable merge oid (6.2). The `folded`
+  // flag comes from the affordance metadata computed by the resolver.
+  const onTogglePath = useCallback(
+    (mergeOid: string, parentIndex: number, folded: boolean) => {
+      const id = mergePathId(mergeOid, parentIndex);
+      if (folded) expandRegion(id);
+      else collapseRegion(id);
+    },
+    [collapseRegion, expandRegion]
+  );
 
-  // Which commits are eligible for an on-demand collapse control: any commit
-  // whose contiguous region has >= 2 members (Defect 1.10, 2.8). Memoized over
-  // the loaded graph so we don't recompute regionAround per node in render.
+  // Which commits are eligible for an on-demand region-collapse control: any
+  // commit whose contiguous region has >= 2 members (Defect 1.10, 2.8) AND that
+  // is NOT currently hidden behind a merge secondary path. Merge folds take
+  // precedence, so a merge-hidden commit is offered no region control (7.2);
+  // once its merge path is expanded it drops out of `mergeHidden` and regains
+  // candidacy here (7.3). Memoized over the loaded graph + merge-hidden set.
+  // Fold-control eligibility (Task 18.3). `foldableNodeIds` is a single pure,
+  // selection-invariant sweep that marks EVERY member of every >= 2-member
+  // foldable region eligible (not just the head) and maps each to the canonical
+  // anchor `collapseRegion` should fold from. Merge folds still take precedence
+  // (7.2): subtract the merge-hidden members so a commit hidden behind a merge
+  // secondary path is offered no region control; it regains candidacy once its
+  // merge path is expanded and it drops out of `mergeHidden` (7.3).
+  const { eligible, anchorFor } = useMemo(
+    () => foldableNodeIds(graph.nodes, graph.edges, refsByOid),
+    [graph.nodes, graph.edges, refsByOid],
+  );
   const regionEligible = useMemo(() => {
     const set = new Set<string>();
-    for (const n of graph.nodes) {
-      if (regionAround(n.oid, graph.nodes, graph.edges, refsByOid, selectedOid)) {
-        set.add(n.oid);
-      }
+    for (const id of eligible) {
+      if (resolved.mergeHidden.has(id)) continue; // merge precedence (7.2)
+      set.add(id);
     }
     return set;
-  }, [graph.nodes, graph.edges, refsByOid, selectedOid]);
+  }, [eligible, resolved.mergeHidden]);
+
+  // Fold the node's CONTAINING region when its control is activated: any member
+  // resolves to the same canonical anchor via `anchorFor`, so a click on an
+  // interior member folds the whole region (not just when the head is clicked).
+  const onCollapseNode = useCallback(
+    (oid: string) => collapseRegion(anchorFor.get(oid) ?? oid),
+    [collapseRegion, anchorFor],
+  );
 
   // Combined render order: walk the ORIGINAL graph order; when we hit a commit
   // that folded into a run, emit the run node once (at the position of its
@@ -362,11 +507,18 @@ export default function CommitGraph({
             selected: id === selectedOid,
           } as Node;
         }
-        // Regular commit node.
+        // Regular commit node, OR a first-class merge node when the commit has
+        // >= 2 parents. Merge commits carry per-secondary-parent affordance
+        // metadata + a toggle so `MergeNodeComponent` can render the
+        // hidden-branch affordances; the data object is identical for both types
+        // (non-merges just have an empty `hiddenGroups`).
         const commit = nodeByOid.get(id)!;
+        const hiddenGroups: MergeAffordance[] =
+          resolved.affordancesByMerge.get(id) ?? [];
+        const isMerge = commit.parents.length >= 2;
         return {
           id,
-          type: "commit",
+          type: isMerge ? "merge" : "commit",
           position: { x: X_BASE + (lanes.get(id) ?? 0) * LANE_WIDTH, y },
           data: {
             commit,
@@ -374,13 +526,17 @@ export default function CommitGraph({
             selected: id === selectedOid,
             onSelect: onSelectCommit,
             canCollapse: regionEligible.has(id),
-            onCollapse: collapseRegion,
+            onCollapse: onCollapseNode,
+            // Merge affordance data (empty for non-merges / merges with no
+            // non-empty hide set → no affordance rendered).
+            hiddenGroups,
+            onTogglePath,
           },
           selected: id === selectedOid,
         } as Node;
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [renderOrder, lanes, refsByOid, selectedOid, onSelectCommit, runNodes, nodeByOid, effEdges, regionEligible, collapseRegion, expandRegion]
+    [renderOrder, lanes, refsByOid, selectedOid, onSelectCommit, runNodes, nodeByOid, effEdges, regionEligible, onCollapseNode, expandRegion, resolved.affordancesByMerge, onTogglePath]
   );
 
   // Working-tree pseudo-node (working + staged) + one node per stash.
@@ -623,7 +779,39 @@ export default function CommitGraph({
           color="#21262d"
         />
         <Controls />
-        <Panel position="top-right" className="!mt-2 !mr-2">
+        <Panel position="top-right" className="!mt-2 !mr-2 flex gap-2">
+          <div
+            className="inline-flex rounded overflow-hidden border border-[#30363d]"
+            role="group"
+            aria-label="Graph view mode"
+          >
+            <button
+              onClick={() => setViewMode("active")}
+              aria-pressed={viewMode === "active"}
+              className={
+                "px-2 py-1 text-xs " +
+                (viewMode === "active"
+                  ? "bg-[#1f6feb] text-white"
+                  : "bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3]")
+              }
+              title="Show only active/un-merged lines; fold merged branches behind their merge nodes"
+            >
+              Active lines only
+            </button>
+            <button
+              onClick={() => setViewMode("full")}
+              aria-pressed={viewMode === "full"}
+              className={
+                "px-2 py-1 text-xs border-l border-[#30363d] " +
+                (viewMode === "full"
+                  ? "bg-[#1f6feb] text-white"
+                  : "bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3]")
+              }
+              title="Show the full DAG with merged branches expanded by default"
+            >
+              Full DAG
+            </button>
+          </div>
           <button
             onClick={jumpToTop}
             className="px-2 py-1 text-xs rounded bg-[#161b22] border border-[#30363d] text-[#8b949e] hover:text-[#e6edf3] hover:border-[#58a6ff]/50"

@@ -712,6 +712,7 @@ import {
   anchorFromId,
   regionsFromAnchors,
   autoCollapseAnchors,
+  foldableNodeIds,
 } from "./collapse";
 
 // Build the classic branch/merge topology for region tests:
@@ -773,7 +774,7 @@ describe("bug: region contiguity + boundary exclusion (Defect 1.10 / Property 10
     const { nodes, edges, aChain, branchPoint, mergePoint } = branchMergeTopology(4);
     const refs = new Map<string, RefLabel[]>();
     // Anchor on a middle commit of the a-chain.
-    const region = regionAround("a2", nodes, edges, refs, null);
+    const region = regionAround("a2", nodes, edges, refs);
     expect(region).not.toBeNull();
     // Members are exactly the a-chain, newest-first, and DO NOT include the
     // branch point below (c1) or the merge point above (m1).
@@ -796,7 +797,7 @@ describe("bug: orphan-freeness of a region fold (Defect 1.8 / Property 10)", () 
     const { nodes, edges } = branchMergeTopology(4);
     const refs = new Map<string, RefLabel[]>();
     const nodeByOid = new Map(nodes.map((n) => [n.oid, n]));
-    const groups = regionsFromAnchors(["a2"], nodes, edges, refs, null);
+    const groups = regionsFromAnchors(["a2"], nodes, edges, refs);
     expect(groups.length).toBe(1);
     const eff = applyCollapse(nodes, edges, groups, new Set(), nodeByOid);
     expect(orphanedMembers(nodes, eff)).toEqual([]);
@@ -836,7 +837,7 @@ describe("bug: orphan-freeness of a region fold (Defect 1.8 / Property 10)", () 
 
     const refs = new Map<string, RefLabel[]>();
     const nodeByOid = new Map(nodes.map((n) => [n.oid, n]));
-    const groups = regionsFromAnchors(["x2", "y2"], nodes, edges, refs, null);
+    const groups = regionsFromAnchors(["x2", "y2"], nodes, edges, refs);
     expect(groups.length).toBe(2);
     const eff = applyCollapse(nodes, edges, groups, new Set(), nodeByOid);
     expect(orphanedMembers(nodes, eff)).toEqual([]);
@@ -874,7 +875,7 @@ describe("bug: stable-identity round-trip (Defect 1.9 / Property 11)", () => {
     m1.parents = ["a5", "b1"];
     nodes2.sort((a, b) => b.timestamp - a.timestamp);
 
-    const region2 = regionAround("a2", nodes2, filtered, refs, null);
+    const region2 = regionAround("a2", nodes2, filtered, refs);
     expect(region2).not.toBeNull();
     const idAfter = regionRollupId("a2");
     // Stable identity: the anchor-keyed id is identical even though membership
@@ -889,7 +890,7 @@ describe("bug: on-demand eligibility (Defect 1.10 / Property 12)", () => {
     const { nodes, edges } = branchMergeTopology(4);
     const refs = new Map<string, RefLabel[]>();
     // a-chain commit → eligible.
-    expect(regionAround("a3", nodes, edges, refs, null)).not.toBeNull();
+    expect(regionAround("a3", nodes, edges, refs)).not.toBeNull();
 
     // Lone commit wedged directly between a branch point and a merge point:
     //   root(branch point) - lone - merge(2 parents)
@@ -909,22 +910,39 @@ describe("bug: on-demand eligibility (Defect 1.10 / Property 12)", () => {
     // `lone` has one parent (root) and one child (merge) → foldable itself, but
     // its region has only itself (root is a branch point, merge is a merge
     // point), so < 2 members → null.
-    expect(regionAround("lone", lnodes, ledges, refs, null)).toBeNull();
+    expect(regionAround("lone", lnodes, ledges, refs)).toBeNull();
   });
 
-  it("regionAround === null for a non-foldable anchor (carries a ref/HEAD/tag)", () => {
+  it("regionAround folds a non-HEAD ref anchor but pins the HEAD anchor", () => {
+    // Ref-folding follow-up (Task 11): a branch/remote-branch/tag ref no longer
+    // blocks folding — only the checked-out HEAD commit stays pinned. Refs on
+    // hidden members resurface as summary-node badges (tasks 12/13).
     const { nodes, edges } = branchMergeTopology(4);
-    const refs = new Map<string, RefLabel[]>([
+
+    // A tag on an interior a-chain commit no longer makes it non-foldable.
+    const tagRefs = new Map<string, RefLabel[]>([
       ["a2", [{ name: "v1", oid: "a2", kind: "tag", is_head: false, tip_ts: 2000 }]],
     ]);
-    // a2 carries a tag → not foldable as an anchor.
-    expect(regionAround("a2", nodes, edges, refs, null)).toBeNull();
+    const tagged = regionAround("a2", nodes, edges, tagRefs);
+    expect(tagged).not.toBeNull();
+    expect(tagged!).toContain("a2");
+
+    // But a HEAD ref on the same commit keeps it pinned (never folded).
+    const headRefs = new Map<string, RefLabel[]>([
+      ["a2", [{ name: "main", oid: "a2", kind: "head", is_head: true, tip_ts: 2000 }]],
+    ]);
+    expect(regionAround("a2", nodes, edges, headRefs)).toBeNull();
   });
 
-  it("regionAround === null for the selected commit anchor", () => {
+  it("regionAround ignores selection — the anchor is foldable regardless (Property 11)", () => {
+    // Selection is no longer a region boundary (task 15): `regionAround` takes no
+    // `selectedOid` and the selected commit is foldable like any other, so an
+    // anchor that would previously be excluded when selected now folds normally.
     const { nodes, edges } = branchMergeTopology(4);
     const refs = new Map<string, RefLabel[]>();
-    expect(regionAround("a2", nodes, edges, refs, "a2")).toBeNull();
+    const region = regionAround("a2", nodes, edges, refs);
+    expect(region).not.toBeNull();
+    expect(region!).toContain("a2");
   });
 });
 
@@ -964,13 +982,13 @@ describe("bug: HEAD-exempt auto-collapse seed (2.13 / Property 14)", () => {
     // exempt: no seeded anchor's region may intersect the trunk chain.
     const trunkSet = new Set(["t5", "t4", "t3", "t2", "t1", "c1"]);
     for (const a of anchors) {
-      const region = regionAround(a, nodes, edges, refs, null);
+      const region = regionAround(a, nodes, edges, refs);
       expect(region).not.toBeNull();
       for (const oid of region!) expect(trunkSet.has(oid)).toBe(false);
     }
     // The off-trunk region (o1..o4, length 4 >= 3) IS seeded.
     const seededOids = new Set(
-      anchors.flatMap((a) => regionAround(a, nodes, edges, refs, null) ?? []),
+      anchors.flatMap((a) => regionAround(a, nodes, edges, refs) ?? []),
     );
     expect(off.every((o) => seededOids.has(o))).toBe(true);
   });
@@ -1068,5 +1086,249 @@ describe("preservation R3: branches.ts server-ref scoping unchanged (3.11)", () 
     expect(shown.has("feature-a")).toBe(true);
     expect(shown.has("feature-b")).toBe(false);
     expect(shown.has("origin/old")).toBe(false);
+  });
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// Task 18.2 — Property 15: Eligibility = Participates-In or Adjacent-To a
+// Foldable Region.
+//
+// `foldableNodeIds` marks EVERY member of a >= 2-member foldable region eligible
+// (not just the head), maps each member to one identical canonical anchor, is
+// selection-invariant, excludes HEAD, and never offers a single-commit fold.
+//
+// Validates: Requirements 26.1-26.9, 27.1, 27.3.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("Property 15: foldableNodeIds eligibility over the confirmed chain", () => {
+  // The confirmed chain, newest -> oldest, one in-graph parent/child each:
+  //   772eb2e (HEAD -> main) -> 6f21bf7 (origin/main) -> 431b5c2 -> 86bdb6f (tag) -> 578f9c8
+  // Only the HEAD tip carries the checked-out HEAD; every other commit is a
+  // ref-carrying-or-plain interior/tail commit that is foldable by topology.
+  function confirmedChain(): {
+    nodes: CommitNode[];
+    edges: CommitEdge[];
+    refsByOid: Map<string, RefLabel[]>;
+  } {
+    // The chain proper, newest-first. A root boundary `__root` below the chain
+    // gives the oldest named commit (578f9c8) exactly one in-graph parent so it
+    // is itself a region member (not a bare root boundary), matching the intent
+    // that all four non-HEAD chain commits are foldable.
+    const chain = ["772eb2e", "6f21bf7", "431b5c2", "86bdb6f", "578f9c8"]; // newest-first
+    const full = [...chain, "__root"]; // append the anchoring root boundary
+    const nodes: CommitNode[] = [];
+    const edges: CommitEdge[] = [];
+    // Fixed timestamps, newest-first: 6000, 5000, 4000, 3000, 2000, 1000.
+    full.forEach((oid, i) => {
+      const parent = i < full.length - 1 ? [full[i + 1]] : [];
+      nodes.push(mk(oid, (full.length - i) * 1000, parent));
+      if (parent.length) edges.push({ source: parent[0], target: oid });
+    });
+    const refsByOid = new Map<string, RefLabel[]>([
+      [
+        "772eb2e",
+        [{ name: "main", oid: "772eb2e", kind: "head", is_head: true, tip_ts: 5000 }],
+      ],
+      [
+        "6f21bf7",
+        [
+          {
+            name: "origin/main",
+            oid: "6f21bf7",
+            kind: "remotebranch",
+            is_head: false,
+            tip_ts: 4000,
+          },
+        ],
+      ],
+      [
+        "86bdb6f",
+        [{ name: "v1.0", oid: "86bdb6f", kind: "tag", is_head: false, tip_ts: 2000 }],
+      ],
+    ]);
+    return { nodes, edges, refsByOid };
+  }
+
+  it("marks every non-HEAD member eligible (not just the head), excludes HEAD", () => {
+    const { nodes, edges, refsByOid } = confirmedChain();
+    const { eligible } = foldableNodeIds(nodes, edges, refsByOid);
+    // The four non-HEAD commits all get a control...
+    expect(eligible.has("6f21bf7")).toBe(true);
+    expect(eligible.has("431b5c2")).toBe(true);
+    expect(eligible.has("86bdb6f")).toBe(true);
+    expect(eligible.has("578f9c8")).toBe(true);
+    // ...and the checked-out HEAD stays pinned inline (never a member, and the
+    // adjacency clause explicitly excludes it — Req 26.4).
+    expect(eligible.has("772eb2e")).toBe(false);
+  });
+
+  it("adjacency (Req 26.3): the tail-side neighbor __root is eligible and shares the region anchor; the head-side HEAD neighbor stays excluded", () => {
+    const { nodes, edges, refsByOid } = confirmedChain();
+    const { eligible, anchorFor } = foldableNodeIds(nodes, edges, refsByOid);
+    // Region = {6f21bf7, 431b5c2, 86bdb6f, 578f9c8}; canonical anchor = 6f21bf7.
+    const region = regionAround("431b5c2", nodes, edges, refsByOid);
+    const anchor = region![0];
+    // Tail-side neighbor: __root (the tail 578f9c8's single in-graph parent) is
+    // now ELIGIBLE via the adjacency clause and maps to the SAME anchor as the
+    // region members.
+    expect(eligible.has("__root")).toBe(true);
+    expect(anchorFor.get("__root")).toBe(anchor);
+    // Head-side neighbor: 772eb2e is the region head's child but it's HEAD, so
+    // the HEAD carve-out keeps it excluded even though it is adjacent.
+    expect(eligible.has("772eb2e")).toBe(false);
+    expect(anchorFor.has("772eb2e")).toBe(false);
+  });
+
+  it("maps every eligible member to the SAME single canonical anchor", () => {
+    const { nodes, edges, refsByOid } = confirmedChain();
+    const { eligible, anchorFor } = foldableNodeIds(nodes, edges, refsByOid);
+    const anchors = new Set([...eligible].map((m) => anchorFor.get(m)));
+    expect(anchors.size).toBe(1);
+    // The canonical anchor is the region's newest member (oids[0]).
+    const region = regionAround("431b5c2", nodes, edges, refsByOid);
+    expect(region).not.toBeNull();
+    expect([...anchors][0]).toBe(region![0]);
+  });
+
+  it("is deterministic across two calls (eligible set + anchorFor)", () => {
+    const { nodes, edges, refsByOid } = confirmedChain();
+    const a = foldableNodeIds(nodes, edges, refsByOid);
+    const b = foldableNodeIds(nodes, edges, refsByOid);
+    expect([...a.eligible].sort()).toEqual([...b.eligible].sort());
+    expect([...a.anchorFor.entries()].sort()).toEqual(
+      [...b.anchorFor.entries()].sort(),
+    );
+  });
+
+  it("folding from an interior member folds the identical member set as the head", () => {
+    const { nodes, edges, refsByOid } = confirmedChain();
+    const { anchorFor } = foldableNodeIds(nodes, edges, refsByOid);
+    // Activating on an interior member resolves to the same anchor as the head.
+    const fromInterior = anchorFor.get("86bdb6f");
+    const fromHead = anchorFor.get("6f21bf7");
+    expect(fromInterior).toBe(fromHead);
+    // And that anchor's region is the same ordered member set from any member.
+    const rInterior = regionAround("86bdb6f", nodes, edges, refsByOid);
+    const rHead = regionAround("6f21bf7", nodes, edges, refsByOid);
+    expect(rInterior).toEqual(rHead);
+  });
+
+  it("a branch point / lone commit yields no single-commit eligibility", () => {
+    // A lone commit (no parent, no child) is never eligible.
+    const lone: CommitNode[] = [mk("solo", 1000, [])];
+    const { eligible: e1 } = foldableNodeIds(lone, [], new Map());
+    expect(e1.size).toBe(0);
+
+    // A pure branch point (c1 with two children, each a tip) has no >= 2-member
+    // contiguous region, so no node is offered a single-commit fold.
+    const nodes: CommitNode[] = [
+      mk("c1", 1000, []),
+      mk("x", 2000, ["c1"]),
+      mk("y", 3000, ["c1"]),
+    ];
+    const edges: CommitEdge[] = [
+      { source: "c1", target: "x" },
+      { source: "c1", target: "y" },
+    ];
+    const { eligible: e2 } = foldableNodeIds(nodes, edges, new Map());
+    expect(e2.size).toBe(0);
+  });
+
+  it("eligible set is byte-for-byte identical across different selections (selection-invariant)", () => {
+    // foldableNodeIds takes no selectedOid, so the result cannot vary by
+    // selection — assert the sweep is identical regardless of any external
+    // selection state by simply recomputing (there is no selection input).
+    const { nodes, edges, refsByOid } = confirmedChain();
+    const base = [...foldableNodeIds(nodes, edges, refsByOid).eligible].sort();
+    // Recompute several times (the function is pure / selection-free).
+    for (let i = 0; i < 3; i++) {
+      const again = [...foldableNodeIds(nodes, edges, refsByOid).eligible].sort();
+      expect(again).toEqual(base);
+    }
+  });
+
+  it("adjacency (Req 26.3): a non-HEAD tip directly above a foldable region is eligible and folds that region", () => {
+    // feat(tip, zero children) -> r1 -> r2 -> r3 -> base(root)
+    // {r1,r2,r3} is a >= 2-member foldable region. `feat` is its head-side
+    // neighbor: a NON-HEAD branch tip with zero children, so it is not a region
+    // member (fails the one-child rule) — but it is adjacent, so with the
+    // adjacency clause it becomes eligible and maps to the region's anchor.
+    const chain = ["feat", "r1", "r2", "r3", "base"]; // newest-first
+    const nodes: CommitNode[] = [];
+    const edges: CommitEdge[] = [];
+    chain.forEach((oid, i) => {
+      const parent = i < chain.length - 1 ? [chain[i + 1]] : [];
+      nodes.push(mk(oid, (chain.length - i) * 1000, parent));
+      if (parent.length) edges.push({ source: parent[0], target: oid });
+    });
+    // `feat` carries a plain (non-HEAD) branch ref; no HEAD anywhere.
+    const refsByOid = new Map<string, RefLabel[]>([
+      [
+        "feat",
+        [{ name: "feat", oid: "feat", kind: "branch", is_head: false, tip_ts: 5000 }],
+      ],
+    ]);
+
+    const { eligible, anchorFor } = foldableNodeIds(nodes, edges, refsByOid);
+    // The region {r1,r2,r3} — head-side neighbor `feat`, tail-side neighbor `base`.
+    const region = regionAround("r2", nodes, edges, refsByOid);
+    expect(region).toEqual(["r1", "r2", "r3"]);
+    const anchor = region![0];
+
+    // The non-HEAD tip is now eligible and folds the neighboring region.
+    expect(eligible.has("feat")).toBe(true);
+    expect(anchorFor.get("feat")).toBe(anchor);
+    // Clicking it (collapseRegion(anchorFor.get(tip))) targets the same region
+    // members as folding from the anchor.
+    const fromTip = regionAround(anchorFor.get("feat")!, nodes, edges, refsByOid);
+    expect(fromTip).toEqual(region);
+  });
+
+  it("member priority (Req 27.1): a node that is a member of its OWN region keeps its own-region anchor, not an adjacent region's", () => {
+    // Two foldable regions separated by a branch point `bp`, arranged in one
+    // lane on either side:
+    //   tipA(head) -> a1 -> a2 -> bp -> b1 -> b2 -> base(root)
+    // where `bp` has a SECOND child `sideTip`, making it a branch point (>= 2
+    // children) and thus a region boundary. Region A = {a1,a2}, region B =
+    // {b1,b2}. `bp` is adjacent to BOTH regions (a2's parent and b1's child),
+    // but it is a boundary node, not a member of either — assert it maps to
+    // exactly one anchor and folding it targets a real region.
+    //
+    // More directly for member-priority: `a2` is a MEMBER of region A. It is
+    // also in-lane adjacent to `bp` which borders region B. Its own-region
+    // mapping (region A's anchor) must win.
+    const nodes: CommitNode[] = [
+      mk("tipA", 8000, ["a1"]),
+      mk("a1", 7000, ["a2"]),
+      mk("a2", 6000, ["bp"]),
+      mk("bp", 5000, ["b1"]),
+      mk("sideTip", 4500, ["bp"]),
+      mk("b1", 4000, ["b2"]),
+      mk("b2", 3000, ["base"]),
+      mk("base", 2000, []),
+    ];
+    const edges: CommitEdge[] = [
+      { source: "a1", target: "tipA" },
+      { source: "a2", target: "a1" },
+      { source: "bp", target: "a2" },
+      { source: "b1", target: "bp" },
+      { source: "bp", target: "sideTip" },
+      { source: "b2", target: "b1" },
+      { source: "base", target: "b2" },
+    ];
+    const refsByOid = new Map<string, RefLabel[]>();
+
+    const { anchorFor } = foldableNodeIds(nodes, edges, refsByOid);
+    const regionA = regionAround("a1", nodes, edges, refsByOid);
+    const regionB = regionAround("b1", nodes, edges, refsByOid);
+    expect(regionA).toEqual(["a1", "a2"]);
+    expect(regionB).toEqual(["b1", "b2"]);
+
+    // a2 is a MEMBER of region A → keeps region A's anchor, never region B's.
+    expect(anchorFor.get("a2")).toBe(regionA![0]);
+    expect(anchorFor.get("a2")).not.toBe(regionB![0]);
+    // b1 is a MEMBER of region B → keeps region B's anchor.
+    expect(anchorFor.get("b1")).toBe(regionB![0]);
   });
 });

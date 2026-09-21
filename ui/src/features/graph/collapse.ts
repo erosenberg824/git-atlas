@@ -25,7 +25,10 @@ export const collapsedRunId = (headOid: string, tailOid: string) =>
  * handling treat region nodes as summary nodes too.
  */
 export const isCollapsedRunId = (id: string) =>
-  id.startsWith("__run__") || id.startsWith("__branch__") || isRegionId(id);
+  id.startsWith("__run__") ||
+  id.startsWith("__branch__") ||
+  isRegionId(id) ||
+  isMergePathId(id);
 
 /** Synthetic id for a branch "virtual squash" rollup node. */
 export const branchRollupId = (branch: string) => `__branch__${branch}`;
@@ -47,6 +50,398 @@ export const isRegionId = (id: string) => id.startsWith("__region__");
 export const anchorFromId = (id: string) =>
   id.startsWith("__region__") ? id.slice("__region__".length) : id;
 
+// ── Merge secondary-path fold ids ─────────────────────────────────────────
+//
+// A merge's hidden secondary path is keyed on (mergeOid, parentIndex) so its
+// fold identity is stable as the graph shifts — the merge oid never moves, the
+// same rationale as the Round-3 region anchor (Defect 1.9). parentIndex is the
+// index into `CommitNode.parents` (>= 1 for a secondary parent).
+
+/** Synthetic id for a merge's hidden secondary-path group, keyed on the merge. */
+export const mergePathId = (mergeOid: string, parentIndex: number) =>
+  `__merge__${mergeOid}__${parentIndex}`;
+/** True for a merge secondary-path summary-node id. */
+export const isMergePathId = (id: string) => id.startsWith("__merge__");
+
+/**
+ * Parse a `mergePathId(M, k)` string back into its `(mergeOid, parentIndex)`
+ * components. The id shape is `__merge__<oid>__<index>`, and because the oid is
+ * a git hash (which never contains `__`) the parent index is the segment after
+ * the final `__`. Returns `null` for a non-merge id or a malformed suffix. Used
+ * by the wiring to rebuild `mergeSecondaryPath` groups from folded ids and to
+ * key affordance metadata on the stable merge oid.
+ */
+export function parseMergePathId(
+  id: string,
+): { mergeOid: string; parentIndex: number } | null {
+  if (!isMergePathId(id)) return null;
+  const body = id.slice("__merge__".length);
+  const sep = body.lastIndexOf("__");
+  if (sep < 0) return null;
+  const mergeOid = body.slice(0, sep);
+  const parentIndex = Number(body.slice(sep + "__".length));
+  if (!mergeOid || !Number.isInteger(parentIndex) || parentIndex < 1) return null;
+  return { mergeOid, parentIndex };
+}
+
+/**
+ * The ancestor closure of `roots`, INCLUSIVE of the roots themselves, walking
+ * PARENT links (from a commit to its parents). Edges run parent(source) →
+ * child(target), so ancestors are found by following `target → source`. The
+ * walk is bounded to in-graph commits: out-of-graph roots contribute nothing,
+ * every returned oid is in-graph, and `roots ∩ inGraph ⊆ result`.
+ *
+ * This mirrors `detectBranchRollups`' internal `ancestorsOf`, lifted to module
+ * scope for reuse by the merge secondary-path helpers.
+ */
+export function reachableFrom(
+  roots: string[],
+  nodes: CommitNode[],
+  edges: CommitEdge[],
+): Set<string> {
+  const inGraph = new Set(nodes.map((n) => n.oid));
+  // child(target) → parents(sources), among in-graph commits.
+  const parentsOf = new Map<string, string[]>();
+  for (const e of edges) {
+    if (!inGraph.has(e.source) || !inGraph.has(e.target)) continue;
+    if (!parentsOf.has(e.target)) parentsOf.set(e.target, []);
+    parentsOf.get(e.target)!.push(e.source);
+  }
+
+  const seen = new Set<string>();
+  const stack = roots.filter((oid) => inGraph.has(oid)); // out-of-graph roots contribute nothing
+  while (stack.length) {
+    const oid = stack.pop()!;
+    if (seen.has(oid)) continue;
+    seen.add(oid);
+    for (const p of parentsOf.get(oid) ?? []) {
+      if (!seen.has(p)) stack.push(p);
+    }
+  }
+  return seen;
+}
+
+/**
+ * Best-effort merge base of two commits computed from the loaded DAG: a
+ * *lowest* common ancestor of `a` and `b` over the loaded edges. A commit is a
+ * common ancestor when it is reachable (via parent links) from BOTH `a` and `b`
+ * (`reachableFrom` is inclusive of its roots, so `a`/`b` themselves count when
+ * one is an ancestor of the other). Among the common ancestors, the *lowest*
+ * are those with no in-graph child that is also a common ancestor — i.e. nothing
+ * newer than them is still common.
+ *
+ * Returns `null` when there is no common ancestor in the loaded window (e.g. two
+ * disconnected roots, or the true base scrolled out of the window). When several
+ * lowest common ancestors exist (a criss-cross history), returns the newest by
+ * graph order (nodes are newest-first) for determinism.
+ *
+ * The hide-set computation does NOT depend on this value —
+ * `reachable(Pk) \ reachable(P1)` already excludes the base and everything below
+ * it. `mergeBaseFromEdges` is provided for display ("branch off @ <base>") and
+ * as an explicit floor assertion in tests.
+ */
+export function mergeBaseFromEdges(
+  a: string,
+  b: string,
+  nodes: CommitNode[],
+  edges: CommitEdge[],
+): string | null {
+  const fromA = reachableFrom([a], nodes, edges);
+  const fromB = reachableFrom([b], nodes, edges);
+
+  // Common ancestors: reachable from both a and b.
+  const common = new Set<string>();
+  for (const oid of fromA) {
+    if (fromB.has(oid)) common.add(oid);
+  }
+  if (common.size === 0) return null;
+
+  // In-graph child links (edges run parent(source) → child(target)).
+  const inGraph = new Set(nodes.map((n) => n.oid));
+  const childrenOf = new Map<string, string[]>();
+  for (const e of edges) {
+    if (!inGraph.has(e.source) || !inGraph.has(e.target)) continue;
+    if (!childrenOf.has(e.source)) childrenOf.set(e.source, []);
+    childrenOf.get(e.source)!.push(e.target);
+  }
+
+  // Lowest common ancestors: a common ancestor with no child that is also a
+  // common ancestor (nothing newer than it is still common).
+  const lcas: string[] = [];
+  for (const oid of common) {
+    const hasCommonChild = (childrenOf.get(oid) ?? []).some((c) =>
+      common.has(c),
+    );
+    if (!hasCommonChild) lcas.push(oid);
+  }
+  if (lcas.length === 0) return null;
+
+  // Deterministic pick: newest by graph order (nodes are newest-first).
+  const order = new Map(nodes.map((n, i) => [n.oid, i]));
+  lcas.sort((x, y) => (order.get(x)! - order.get(y)!));
+  return lcas[0];
+}
+
+/** Classification of a merge commit's parents for secondary-path folding. */
+export interface MergeParents {
+  mergeOid: string;
+  firstParent: string; // P1 — mainline continuation
+  secondaryParents: string[]; // P2..Pn — merged-in tips, in parent order
+}
+
+/**
+ * A hidden secondary path behind a merge, keyed on (mergeOid, parentIndex).
+ * The hide set is a SUB-DAG (branch-shaped), not necessarily a linear chain.
+ */
+export interface MergeHideSet {
+  mergeOid: string;
+  parentIndex: number; // index into CommitNode.parents (>= 1)
+  secondaryParent: string; // the Pk this path descends from
+  oids: string[]; // hidden commits, newest-first in graph order
+  mergeBase: string | null; // merge_base(P1, Pk); the floor (stays visible)
+}
+
+/**
+ * The hide set for one secondary parent of a merge: the commits reachable from
+ * `Pk = parents[parentIndex]` but NOT reachable from the first parent
+ * `P1 = parents[0]`.
+ *
+ *   hide(M, k) = reachable(Pk) \ reachable(P1)
+ *
+ * By construction `P1` and all of its ancestors are excluded (they are in
+ * `reachable(P1)`), and the merge `M` itself is never a member (it stays visible
+ * as the expand point) — guarded explicitly. `Pk` is included iff it was not
+ * already merged into the mainline (i.e. `Pk ∉ reachable(P1)`). The result is a
+ * SUB-DAG (branch-shaped, possibly containing inner merges), ordered newest-first
+ * by graph order (nodes are newest-first / topological).
+ *
+ * Returns `null` when `mergeOid` is out-of-graph, `parentIndex` is not a valid
+ * secondary parent (`< 1` or `>= parents.length`), `Pk` is not an in-graph
+ * commit, or the hide set is empty (nothing unique to this side — e.g. an
+ * already-fully-merged parent).
+ *
+ * `mergeBase` is populated via `mergeBaseFromEdges(P1, Pk)` — a display/floor
+ * value that does not affect the hide-set oids (`reachable(Pk) \ reachable(P1)`
+ * already excludes the base and everything below it). It is `null` when no
+ * common ancestor is present in the loaded window.
+ */
+export function mergeSecondaryPath(
+  mergeOid: string,
+  parentIndex: number,
+  nodes: CommitNode[],
+  edges: CommitEdge[],
+): MergeHideSet | null {
+  const nodeByOid = new Map(nodes.map((n) => [n.oid, n]));
+  const merge = nodeByOid.get(mergeOid);
+  if (!merge) return null; // merge out-of-graph
+  if (parentIndex < 1 || parentIndex >= merge.parents.length) return null; // not a secondary parent
+
+  const firstParent = merge.parents[0];
+  const secondaryParent = merge.parents[parentIndex];
+  if (!nodeByOid.has(secondaryParent)) return null; // Pk not an in-graph commit
+
+  const fromP1 = reachableFrom([firstParent], nodes, edges);
+  const fromPk = reachableFrom([secondaryParent], nodes, edges);
+
+  // hide(M,k) = reachable(Pk) \ reachable(P1). The set difference automatically
+  // excludes P1 and all its ancestors; guard the merge itself so M is never a
+  // member even in a degenerate graph.
+  const hide = new Set<string>();
+  for (const oid of fromPk) {
+    if (oid === mergeOid) continue; // M stays visible as the expand point
+    if (fromP1.has(oid)) continue; // reachable from P1 → excluded (base + mainline)
+    hide.add(oid);
+  }
+  if (hide.size === 0) return null; // nothing unique to this side
+
+  // Order newest-first by graph order (nodes are newest-first, topological) —
+  // same ordering approach as regionAround / detectBranchRollups.
+  const oids = nodes.map((n) => n.oid).filter((o) => hide.has(o));
+
+  return {
+    mergeOid,
+    parentIndex,
+    secondaryParent,
+    oids,
+    // Display / floor value only — does NOT affect the hide-set oids above.
+    // Null when the true base is out of the loaded window (under-hide, never
+    // orphan).
+    mergeBase: mergeBaseFromEdges(firstParent, secondaryParent, nodes, edges),
+  };
+}
+
+/**
+ * All secondary-path hide sets for a merge — one per secondary parent with a
+ * non-empty hide set. Iterates `parentIndex` from `1..parents.length-1` and
+ * collects the non-null `mergeSecondaryPath` results, so an octopus merge with
+ * `n` parents yields up to `n-1` independently collapsible groups. Returns `[]`
+ * when `mergeOid` is out-of-graph or is not a merge (fewer than 2 parents).
+ */
+export function mergeHideGroups(
+  mergeOid: string,
+  nodes: CommitNode[],
+  edges: CommitEdge[],
+): MergeHideSet[] {
+  const merge = nodes.find((n) => n.oid === mergeOid);
+  if (!merge || merge.parents.length < 2) return []; // out-of-graph or not a merge
+
+  const groups: MergeHideSet[] = [];
+  for (let k = 1; k < merge.parents.length; k++) {
+    const set = mergeSecondaryPath(mergeOid, k, nodes, edges);
+    if (set) groups.push(set);
+  }
+  return groups;
+}
+
+/**
+ * Compute the DEFAULT-view fold seed: which merges' secondary paths are folded
+ * on load. A "line" is shown only when its tip is a LEAF frontier — a LOCAL
+ * branch tip or HEAD that is NOT reachable from any OTHER local tip / HEAD.
+ * Remote-tracking refs and tags are NOT counted as "other tips" (so a branch
+ * caught up with its remote doesn't collapse itself, and fetching doesn't cause
+ * flicker). Everything reachable from another local tip is "already merged" and
+ * is folded behind its merge node's secondary-path hide set.
+ *
+ * Algorithm (Property 4 / design §leafTipVisibility):
+ *   1. Candidate tips = oids of local branch tips (`kind === "branch"`) + HEAD
+ *      (`is_head` / `kind === "head"`); `remotebranch` and `tag` are ignored.
+ *   2. `leafTips` = candidate tips whose oid is NOT reachable from any OTHER
+ *      candidate tip (i.e. not an ancestor of another local tip / HEAD). A lone
+ *      candidate tip is trivially a leaf (no other tip to be reachable from).
+ *   3. For every merge `M` and each secondary parent, fold its hide set — add
+ *      `mergePathId(M, k)` — iff none of the hide set's members is a leaf tip;
+ *      leave it expanded when any member is a leaf tip (that line stays open).
+ *
+ * Returns the set of `mergePathId(M, k)` strings to fold by default.
+ */
+export function leafTipVisibility(
+  nodes: CommitNode[],
+  edges: CommitEdge[],
+  refs: RefLabel[],
+): Set<string> {
+  const inGraph = new Set(nodes.map((n) => n.oid));
+
+  // 1. Candidate tips: local branches + HEAD; remote-tracking refs and tags are
+  //    excluded entirely from the "other tip" comparison.
+  const candidateTips = new Set<string>();
+  for (const r of refs) {
+    if (r.kind === "branch" || r.kind === "head" || r.is_head) {
+      if (inGraph.has(r.oid)) candidateTips.add(r.oid);
+    }
+  }
+
+  // 2. leafTips = candidate tips not reachable from any OTHER candidate tip. A
+  //    lone tip has no "other tips", so `reachableFrom([])` is empty → it's a
+  //    leaf.
+  const tips = [...candidateTips];
+  const leafTips = new Set<string>();
+  for (const t of tips) {
+    const others = tips.filter((o) => o !== t);
+    const fromOthers = reachableFrom(others, nodes, edges);
+    if (!fromOthers.has(t)) leafTips.add(t);
+  }
+
+  // 3. For every merge, fold each secondary path whose hide set contains no leaf
+  //    tip; leave paths whose hide set includes a leaf tip expanded.
+  const toFold = new Set<string>();
+  for (const n of nodes) {
+    if (n.parents.length < 2) continue; // not a merge
+    for (const group of mergeHideGroups(n.oid, nodes, edges)) {
+      const hasLeaf = group.oids.some((o) => leafTips.has(o));
+      if (!hasLeaf) toFold.add(mergePathId(group.mergeOid, group.parentIndex));
+    }
+  }
+  return toFold;
+}
+
+/**
+ * Recursion (Property 3 / Requirement 4): the hide groups that should be
+ * OFFERED right now, given which secondary paths are currently FOLDED.
+ *
+ * A hidden secondary path is a sub-DAG that may contain inner merges. While an
+ * enclosing path is folded, its inner merges are NOT rendered (they are members
+ * of the enclosing hide set), so they must not offer their own affordance
+ * (4.1). When the enclosing path is expanded, those inner merges become visible
+ * and — because `mergeHideGroups` is per-merge and stateless — re-running it
+ * over the current node set naturally surfaces their own hide sets (4.2, 4.3).
+ *
+ * This helper makes that contract explicit and pure: it re-runs
+ * `mergeHideGroups` for every in-graph merge, but SKIPS any merge whose oid is
+ * hidden behind a currently-folded path. `foldedPathIds` is the set of
+ * `mergePathId(M, k)` strings that are folded right now (a subset of what the
+ * UI records in its fold state). The result is the flat list of hide groups
+ * that should currently show an affordance — inner merges appear in it exactly
+ * when their enclosing path is expanded.
+ *
+ * Recursion is therefore *inherent* in the stateless per-merge design; this
+ * function only encodes "don't offer a control for a merge you can't see yet"
+ * so the caller (CommitGraph wiring, task 6) stays trivial and the recursion
+ * contract is directly unit-testable.
+ */
+export function visibleMergeHideGroups(
+  nodes: CommitNode[],
+  edges: CommitEdge[],
+  foldedPathIds: Set<string>,
+): MergeHideSet[] {
+  // Which commits are currently hidden behind a folded secondary path? A merge
+  // whose oid is in this set is not rendered, so it offers no affordance.
+  const hidden = new Set<string>();
+  for (const n of nodes) {
+    if (n.parents.length < 2) continue; // not a merge
+    for (const group of mergeHideGroups(n.oid, nodes, edges)) {
+      if (foldedPathIds.has(mergePathId(group.mergeOid, group.parentIndex))) {
+        for (const oid of group.oids) hidden.add(oid);
+      }
+    }
+  }
+
+  // Offer hide groups only for merges that are themselves visible (not hidden
+  // behind a folded enclosing path).
+  const visible: MergeHideSet[] = [];
+  for (const n of nodes) {
+    if (n.parents.length < 2) continue; // not a merge
+    if (hidden.has(n.oid)) continue; // merge is itself folded away
+    for (const group of mergeHideGroups(n.oid, nodes, edges)) {
+      visible.push(group);
+    }
+  }
+  return visible;
+}
+
+/**
+ * A ref carried by a commit hidden inside a fold, tagged with where it sits.
+ * `buried === false` → the ref is on the fold's head member (`oids[0]`, the
+ * newest / tip of the group); `buried === true` → it is carried by an interior
+ * (non-head) member. Used so a folded branch/remote-branch/tag never silently
+ * disappears — it resurfaces as a badge on the summary node, styled head-vs-
+ * buried (Requirements 16/17).
+ */
+export interface FoldedRef {
+  ref: RefLabel;
+  buried: boolean;
+}
+
+/**
+ * Collect the refs carried by a group's member commits, tagged head-vs-buried.
+ * `oids` is the group's ordered members, newest-first, so `oids[0]` is the head
+ * member: a ref on `oids[0]` is head (`buried:false`) and a ref on any later
+ * member is buried (`buried:true`). Emits one `FoldedRef` per (member, ref) pair,
+ * preserving member order then ref order, and returns `[]` when no member carries
+ * a ref (Requirement 16.4). Pure and DOM-free.
+ */
+export function foldedRefsFor(
+  oids: string[],
+  refsByOid: Map<string, RefLabel[]>,
+): FoldedRef[] {
+  const out: FoldedRef[] = [];
+  oids.forEach((oid, index) => {
+    for (const ref of refsByOid.get(oid) ?? []) {
+      out.push({ ref, buried: index > 0 });
+    }
+  });
+  return out;
+}
+
 export interface CollapsedRunData {
   kind: "run";
   id: string;
@@ -59,6 +454,12 @@ export interface CollapsedRunData {
   oldestTs: number;
   /** For branch rollups: the branch name being virtually squashed. */
   label?: string;
+  /**
+   * Refs carried by hidden members, tagged head-vs-buried (Requirements 16/17).
+   * Populated when `applyCollapse` receives `refsByOid`; empty/undefined ⇒ no
+   * folded-ref badge on the summary node.
+   */
+  foldedRefs?: FoldedRef[];
 }
 
 /** A detected foldable group (linear run OR branch rollup). */
@@ -67,6 +468,16 @@ export interface Run {
   id: string;
   /** Optional branch-name label (present for branch rollups). */
   label?: string;
+  /**
+   * Option-A merge fold: an EXISTING rendered commit oid that folded members
+   * map onto, instead of minting a `CollapsedRunData` summary node. When set,
+   * `applyCollapse` creates no summary node for this group; every member oid is
+   * routed to `renderAnchor` via `foldedInto`, so the boundary edge (e.g. the
+   * merge's `Pk → M` secondary edge) reroutes onto the still-visible anchor and
+   * the resulting self-loop is dropped. The anchor commit itself stays a normal
+   * rendered node and MUST NOT appear in `oids`.
+   */
+  renderAnchor?: string;
 }
 
 /**
@@ -166,14 +577,18 @@ export function detectRuns(
  *
  * Returns the region's member oids newest-first, or `null` when the region has
  * fewer than 2 members (a lone commit renders as a normal node — 2.8/3.8) or
- * the anchor itself is not foldable (it's a boundary/ref/selected commit).
+ * the anchor itself is not foldable (it's a boundary/HEAD commit).
+ *
+ * Foldability is purely topological plus the HEAD carve-out — selection is NOT
+ * a region boundary (Property 11): the selected commit is treated exactly like
+ * any other commit, so the region set is invariant across different selections
+ * and the selected commit keeps its fold control.
  */
 export function regionAround(
   oid: string,
   nodes: CommitNode[],
   edges: CommitEdge[],
   refsByOid: Map<string, RefLabel[]>,
-  selectedOid: string | null,
 ): string[] | null {
   const inGraph = new Set(nodes.map((n) => n.oid));
   if (!inGraph.has(oid)) return null;
@@ -191,15 +606,28 @@ export function regionAround(
     childOf.set(e.source, e.target);
   }
 
+  // A commit carries the checked-out HEAD when its ref list has a HEAD entry
+  // (`is_head` primarily; `kind === "head"` belt-and-suspenders).
+  const isHead = (x: string): boolean =>
+    (refsByOid.get(x) ?? []).some((r) => r.is_head || r.kind === "head");
+
   const foldable = (x: string): boolean => {
-    if (selectedOid === x) return false;
-    if ((refsByOid.get(x)?.length ?? 0) > 0) return false; // has a ref/tag/HEAD
+    // Refs (branch/remote-branch/tag) NO LONGER block folding — they surface as
+    // badges on the summary node (tasks 12/13) so nothing silently disappears.
+    // Only the checked-out HEAD commit stays pinned inline, so the user's current
+    // position is never hidden inside a fold. The common HEAD-at-tip case is
+    // already non-foldable by the one-child rule below; this gate only bites for
+    // an interior/detached HEAD (one parent AND one child).
+    //
+    // Selection is likewise NOT a boundary (Property 11): the selected commit is
+    // foldable like any other, so the region set is invariant across selections.
+    if (isHead(x)) return false;
     if ((parentCount.get(x) ?? 0) !== 1) return false; // root or merge point
     if ((childCount.get(x) ?? 0) !== 1) return false; // tip or branch point
     return true;
   };
 
-  if (!foldable(oid)) return null; // anchor is a boundary/ref/selected commit itself
+  if (!foldable(oid)) return null; // anchor is a boundary/HEAD commit itself
 
   // Collect members as a set first (order fixed at the end via graph order).
   const members = new Set<string>([oid]);
@@ -243,13 +671,12 @@ export function regionsFromAnchors(
   nodes: CommitNode[],
   edges: CommitEdge[],
   refsByOid: Map<string, RefLabel[]>,
-  selectedOid: string | null,
 ): Run[] {
   const groups: Run[] = [];
   const claimed = new Set<string>();
   for (const anchor of anchors) {
     if (claimed.has(anchor)) continue;
-    const members = regionAround(anchor, nodes, edges, refsByOid, selectedOid);
+    const members = regionAround(anchor, nodes, edges, refsByOid);
     if (!members) continue;
     // Skip if this region overlaps an already-claimed region (dedupe).
     if (members.some((o) => claimed.has(o))) continue;
@@ -257,6 +684,129 @@ export function regionsFromAnchors(
     groups.push({ oids: members, id: regionRollupId(anchor) });
   }
   return groups;
+}
+
+/**
+ * Result of `foldableNodeIds`: the set of nodes that should render a fold
+ * control, plus the canonical anchor each node folds its containing region from.
+ */
+export interface FoldableNodes {
+  /** Every node oid that should render a fold control. */
+  eligible: Set<string>;
+  /** node oid -> canonical region anchor oid `collapseRegion` should use. */
+  anchorFor: Map<string, string>;
+}
+
+/**
+ * Discover every foldable region once and mark EVERY member of each ≥ 2-member
+ * region as eligible for a fold control (not just the region head) AND every
+ * in-lane node IMMEDIATELY ADJACENT to such a region (Req 26.3), mapping each to
+ * the region's canonical anchor.
+ *
+ * For each node, `regionAround(node.oid, …)` returns the ordered members
+ * (newest-first) of the maximal contiguous foldable region CONTAINING that node,
+ * or `null` when the region has fewer than 2 members. Because the walk expands
+ * both up and down from ANY starting member, `regionAround` returns the SAME
+ * ordered member list for every member of a region — so choosing the canonical
+ * anchor as `members[0]` (the region's newest member) is deterministic and
+ * identical no matter which member seeded the lookup. Every member is added to
+ * `eligible` and mapped to that canonical anchor in `anchorFor`; re-visiting a
+ * member already present is idempotent (it maps to the identical anchor).
+ *
+ * ADJACENCY CLAUSE (Req 26.3): a region is a contiguous linear chain bounded by
+ * (and EXCLUDING) two in-lane neighbors — the region head's single in-graph
+ * CHILD (the node just NEWER than the region — a tip, or a branch/merge point)
+ * and the region tail's single in-graph PARENT (the node just OLDER — a root or
+ * branch point). Those neighbors are NOT region members (they fail the foldable
+ * topology test — e.g. a tip has zero children, a root has zero parents), so
+ * without this clause they'd show no control even though clicking one should
+ * fold the neighboring region. Each such neighbor is marked eligible and mapped
+ * to the SAME canonical anchor, so `collapseRegion(anchorFor.get(neighbor))`
+ * folds the adjacent region.
+ *
+ * MEMBER PRIORITY (Req 27.1): region MEMBER mappings are applied FIRST for every
+ * region; adjacency mappings are added only when a node has no mapping yet
+ * (`!anchorFor.has(neighbor)`). So a node that heads its OWN foldable region
+ * folds ITS region — never a neighbor's.
+ *
+ * EXCLUSIONS (Req 26.4): the checked-out HEAD_Commit is never marked eligible by
+ * the adjacency clause (it stays pinned inline). Merge-hidden exclusion (Req
+ * 26.8) is NOT applied here: that happens at the graph-composition layer in
+ * `CommitGraph.tsx`, which subtracts merge-hidden oids from `eligible` before
+ * wiring `canCollapse`.
+ *
+ * Purely topological and **selection-invariant** — it takes no `selectedOid`
+ * (Property 11: selection is never a region boundary), so the result is
+ * identical across selections. HEAD is already excluded from region membership
+ * by `regionAround`'s `foldable` predicate, and a single-commit fold is never
+ * offered (`regionAround` returns `null` for < 2 members).
+ */
+export function foldableNodeIds(
+  nodes: CommitNode[],
+  edges: CommitEdge[],
+  refsByOid: Map<string, RefLabel[]>,
+): FoldableNodes {
+  const eligible = new Set<string>();
+  const anchorFor = new Map<string, string>();
+
+  const inGraph = new Set(nodes.map((n) => n.oid));
+
+  // In-graph child-of / parent-of maps (edges run parent(source)→child(target)),
+  // same style as regionAround. A region is linear so its head/tail each have a
+  // single in-graph child/parent — the adjacency neighbors we look up below.
+  const childOf = new Map<string, string>(); // parent.source -> single in-graph child
+  const parentOf = new Map<string, string>(); // child.target -> single in-graph parent
+  for (const e of edges) {
+    if (!inGraph.has(e.source) || !inGraph.has(e.target)) continue;
+    childOf.set(e.source, e.target);
+    parentOf.set(e.target, e.source);
+  }
+
+  // A commit carries the checked-out HEAD when its ref list has a HEAD entry.
+  const isHead = (x: string): boolean =>
+    (refsByOid.get(x) ?? []).some((r) => r.is_head || r.kind === "head");
+
+  // Discover the distinct regions once (keyed by canonical anchor) so member
+  // mappings can be applied for ALL regions BEFORE any adjacency mapping — this
+  // guarantees member priority (Req 27.1) regardless of node iteration order.
+  const regionByAnchor = new Map<string, string[]>();
+  for (const n of nodes) {
+    const members = regionAround(n.oid, nodes, edges, refsByOid);
+    if (!members) continue; // lone commit / boundary / HEAD → no region
+    regionByAnchor.set(members[0], members); // idempotent: same anchor => same list
+  }
+
+  // Pass 1 — members. Mark every member eligible and map to its region's
+  // canonical anchor (region's newest member, members[0]).
+  for (const [anchor, members] of regionByAnchor) {
+    for (const m of members) {
+      eligible.add(m);
+      anchorFor.set(m, anchor);
+    }
+  }
+
+  // Pass 2 — adjacency. For each region, mark its two immediate in-lane
+  // neighbors eligible mapped to the SAME anchor, WITHOUT clobbering a node's
+  // own-region mapping (members keep priority — Req 27.1) and excluding the
+  // checked-out HEAD_Commit (Req 26.4).
+  for (const [anchor, members] of regionByAnchor) {
+    const head = members[0]; // newest member
+    const tail = members[members.length - 1]; // oldest member
+    // Region head's single in-graph child = the node just NEWER than the region.
+    const newerNeighbor = childOf.get(head);
+    // Region tail's single in-graph parent = the node just OLDER than the region.
+    const olderNeighbor = parentOf.get(tail);
+    for (const neighbor of [newerNeighbor, olderNeighbor]) {
+      if (neighbor === undefined) continue; // no such in-graph neighbor
+      if (!inGraph.has(neighbor)) continue;
+      if (isHead(neighbor)) continue; // HEAD stays pinned inline (Req 26.4)
+      if (anchorFor.has(neighbor)) continue; // own-region mapping wins (Req 27.1)
+      eligible.add(neighbor);
+      anchorFor.set(neighbor, anchor);
+    }
+  }
+
+  return { eligible, anchorFor };
 }
 
 /**
@@ -295,7 +845,7 @@ export function autoCollapseAnchors(
   for (const n of nodes) {
     const oid = n.oid;
     if (covered.has(oid)) continue;
-    const members = regionAround(oid, nodes, edges, refsByOid, null);
+    const members = regionAround(oid, nodes, edges, refsByOid);
     if (!members) continue;
     for (const m of members) covered.add(m);
     if (members.length < minLen) continue;
@@ -483,12 +1033,21 @@ export function applyCollapse(
   runs: Run[],
   expanded: Set<string>,
   nodeByOid: Map<string, CommitNode>,
+  refsByOid?: Map<string, RefLabel[]>,
 ): EffectiveGraph {
   const runNodes = new Map<string, CollapsedRunData>();
   const foldedInto = new Map<string, string>();
 
   const collapsedRuns = runs.filter((r) => !expanded.has(r.id));
   for (const run of collapsedRuns) {
+    // Option-A merge fold: fold members onto an EXISTING rendered commit
+    // (the anchor) instead of minting a summary node. The anchor stays a
+    // normal node; the boundary edge reroutes onto it via `renderId` and the
+    // resulting self-loop is dropped by the `s === t` guard below.
+    if (run.renderAnchor) {
+      for (const oid of run.oids) foldedInto.set(oid, run.renderAnchor);
+      continue;
+    }
     const first = nodeByOid.get(run.oids[0])!; // newest
     const last = nodeByOid.get(run.oids[run.oids.length - 1])!; // oldest
     runNodes.set(run.id, {
@@ -501,6 +1060,10 @@ export function applyCollapse(
       newestTs: first.timestamp,
       oldestTs: last.timestamp,
       label: run.label,
+      // Additive display metadata: refs carried by the folded members, tagged
+      // head-vs-buried. Only populated when refsByOid is supplied (merge path
+      // folds via renderAnchor mint no node and are handled above).
+      foldedRefs: refsByOid ? foldedRefsFor(run.oids, refsByOid) : undefined,
     });
     for (const oid of run.oids) foldedInto.set(oid, run.id);
   }
@@ -605,4 +1168,235 @@ export function detectBranchRollups(
     rollups.push({ oids: unique, id: branchRollupId(name), label: name });
   }
   return rollups;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// Merge-fold ⨉ Region-collapse composition (task 6.1 / 6.2).
+//
+// Both fold mechanisms flow through the same `applyCollapse` pass, so they
+// compose in one place. The rules (design §"Coexistence with Round 3
+// Region-Collapse", Properties 5 + 6):
+//
+//   1. Compute the MERGE folds first, from the currently effectively-folded
+//      merge-path ids. Each folded `mergePathId(M, k)` becomes a group with
+//      `renderAnchor = M` (Option A — no minted summary node). The union of all
+//      folded hide sets is the "merge-hidden" member set `Hm`.
+//   2. Region seeding/eligibility is computed ONLY over commits not in `Hm`
+//      (merge precedence — Requirement 7.1/7.2/12.1): a commit hidden behind a
+//      merge is not also a region candidate and offers no region control.
+//   3. Both group kinds fold in ONE `applyCollapse` pass, producing one
+//      EffectiveGraph. Expanding a merge path removes its members from `Hm`, so
+//      they regain region candidacy on the next recompute (7.3) — this falls
+//      out naturally because everything is recomputed from the effective folded
+//      sets.
+//
+// This is the DOM-free decision core the wiring (`CommitGraph.tsx`) drives and
+// the reversibility / coexistence property tests exercise directly.
+// ─────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────
+// Task 8.1 — Global default-view toggle: "Active lines only" vs "Full DAG".
+//
+// The graph's effective folded set is composed from a DEFAULT SEED plus the
+// user's own manual overrides. The seed has two independent parts:
+//
+//   • regionSeed — long off-trunk linear regions auto-fold (Round-3
+//     `autoCollapseAnchors`). This is ALWAYS applied, in both view modes.
+//   • mergeSeed  — the merge default-view leaf-tip fold (`leafTipVisibility`),
+//     which folds every merged line behind its merge node. This is applied
+//     ONLY in "active" mode; in "full" mode it is omitted so the full DAG shows
+//     with merged branches expanded by default.
+//
+// Crucially (Requirement 13.3) the user's manual fold/expand overrides must
+// survive a view-mode flip. They are tracked SEPARATELY from the seed
+// (`userCollapsed` / `userExpanded`) and are NOT reset when `viewMode` changes.
+// `composeFoldSeed` is the single pure decision that combines them:
+//
+//   effectiveFolded = (regionSeed ∪ activeMergeSeed ∪ userCollapsed) \ userExpanded
+//
+// where `activeMergeSeed = viewMode === "active" ? mergeSeed : ∅`. Because the
+// user overrides are applied last and are independent of `viewMode`, a
+// user-collapsed path stays folded and a user-expanded path stays expanded in
+// BOTH modes — only the unoverridden (default) merge paths flip.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Which default-view mode the graph is in (Requirement 13.1/13.2). */
+export type ViewMode = "active" | "full";
+
+/**
+ * Compose the effective folded-id set from the default seeds and the user's
+ * manual overrides, for the given view mode. Pure and DOM-free so the
+ * view-mode toggle's seed logic is unit-testable (Task 8.2).
+ *
+ * @param viewMode       "active" applies the merge leaf-tip seed; "full" omits it
+ * @param regionSeed     Round-3 region auto-collapse anchors (always applied)
+ * @param mergeSeed      merge default-view leaf-tip fold ids (`leafTipVisibility`)
+ * @param userCollapsed  ids the user manually folded (applied in both modes)
+ * @param userExpanded   ids the user manually expanded (win over every fold)
+ *
+ * @returns the set of ids to fold:
+ *   (regionSeed ∪ (viewMode==="active" ? mergeSeed : ∅) ∪ userCollapsed) \ userExpanded
+ *
+ * A user expand authoritatively wins over any seed or manual collapse (the
+ * reversible round-trip of task 6), so it is subtracted last.
+ */
+export function composeFoldSeed(
+  viewMode: ViewMode,
+  regionSeed: Iterable<string>,
+  mergeSeed: Iterable<string>,
+  userCollapsed: Iterable<string>,
+  userExpanded: Set<string>,
+): Set<string> {
+  const folded = new Set<string>();
+  for (const id of regionSeed) folded.add(id);
+  if (viewMode === "active") {
+    for (const id of mergeSeed) folded.add(id);
+  }
+  for (const id of userCollapsed) folded.add(id);
+  // A manual expand wins over every fold source (seed or manual collapse).
+  for (const id of userExpanded) folded.delete(id);
+  return folded;
+}
+
+/** Affordance metadata for one merge's secondary paths, threaded to the node. */
+export interface MergeAffordance {
+  parentIndex: number;
+  id: string; // mergePathId(M, parentIndex)
+  hiddenCount: number; // commits hidden behind this path
+  folded: boolean; // currently folded?
+  /**
+   * Refs carried by commits on this secondary path, tagged head-vs-buried by
+   * `group.oids` order (Requirements 16.2/17). Empty ⇒ no folded-ref badge.
+   */
+  foldedRefs: FoldedRef[];
+}
+
+/** Result of the composed merge + region fold resolution. */
+export interface MergeRegionFold {
+  /** The single effective graph after folding merge paths AND regions. */
+  eff: EffectiveGraph;
+  /** Union of all currently-folded merge hide-set members (`Hm`). */
+  mergeHidden: Set<string>;
+  /** Merge-fold groups (renderAnchor = merge oid) that were folded. */
+  mergeGroups: Run[];
+  /** Region groups that were folded (excludes any merge-hidden commit). */
+  regionGroups: Run[];
+  /**
+   * Affordance metadata per merge oid: one entry per secondary parent that is
+   * currently OFFERED (recursion-aware — a merge hidden behind another folded
+   * path is omitted). `folded` reflects whether that path is in `foldedMergePathIds`.
+   */
+  affordancesByMerge: Map<string, MergeAffordance[]>;
+}
+
+/**
+ * Compose the merge secondary-path folds and the Round-3 region-collapse folds
+ * into one effective graph, with merge folds taking precedence.
+ *
+ * @param nodes                loaded commit nodes (newest-first)
+ * @param edges                parent(source)→child(target) edges
+ * @param refsByOid            ref badges per oid (for region foldability)
+ * @param selectedOid          the selected commit. NOT used for region
+ *                             foldability (Property 11 — selection is never a
+ *                             region boundary); retained for the selection-follow
+ *                             wiring (task 16, §3).
+ * @param foldedMergePathIds   the set of `mergePathId(M,k)` currently folded
+ *                             (already resolved through expand/collapse state)
+ * @param regionAnchors        region fold anchors currently effective (region
+ *                             oids from the auto seed + manual collapses, minus
+ *                             user-expanded — resolved by the caller)
+ *
+ * Region anchors and members that fall inside a merge-hidden commit are dropped
+ * so the two membership sets stay disjoint (Requirement 7.4).
+ */
+export function resolveMergeAndRegionFold(
+  nodes: CommitNode[],
+  edges: CommitEdge[],
+  refsByOid: Map<string, RefLabel[]>,
+  selectedOid: string | null,
+  foldedMergePathIds: Set<string>,
+  regionAnchors: Iterable<string>,
+): MergeRegionFold {
+  const nodeByOid = new Map(nodes.map((n) => [n.oid, n]));
+  const inGraph = new Set(nodes.map((n) => n.oid));
+
+  // `selectedOid` is intentionally NOT consulted for region foldability
+  // (Property 11 — selection is never a region boundary). It is retained on the
+  // signature for the selection-follow wiring added in task 16 (§3).
+  void selectedOid;
+
+  // 1. Merge folds first. For each folded merge-path id, rebuild its hide set
+  //    via `mergeSecondaryPath` and fold it onto its merge oid (renderAnchor).
+  //    A stale id whose merge/hide set is absent yields no group (inert — 10.4).
+  const mergeGroups: Run[] = [];
+  const mergeHidden = new Set<string>();
+  for (const id of foldedMergePathIds) {
+    const parsed = parseMergePathId(id);
+    if (!parsed) continue;
+    if (!inGraph.has(parsed.mergeOid)) continue; // stale anchor → inert
+    const hide = mergeSecondaryPath(
+      parsed.mergeOid,
+      parsed.parentIndex,
+      nodes,
+      edges,
+    );
+    if (!hide) continue; // empty / invalid → nothing to fold
+    mergeGroups.push({
+      oids: hide.oids,
+      id,
+      renderAnchor: hide.mergeOid,
+    });
+    for (const oid of hide.oids) mergeHidden.add(oid);
+  }
+
+  // 2. Region seeding/eligibility excludes merge-hidden commits (merge wins).
+  //    Drop any region anchor that is itself merge-hidden, and drop any region
+  //    group whose members intersect `Hm`, so the two memberships are disjoint.
+  const regionGroups: Run[] = [];
+  const regionClaimed = new Set<string>();
+  for (const anchor of regionAnchors) {
+    if (mergeHidden.has(anchor)) continue; // merge precedence (7.1/7.2)
+    if (regionClaimed.has(anchor)) continue;
+    const members = regionAround(anchor, nodes, edges, refsByOid);
+    if (!members) continue;
+    // Merge-hidden overlap or already-claimed overlap → skip (disjoint, 7.4).
+    if (members.some((o) => mergeHidden.has(o) || regionClaimed.has(o))) continue;
+    for (const o of members) regionClaimed.add(o);
+    regionGroups.push({ oids: members, id: regionRollupId(anchor) });
+  }
+
+  // 3. Fold both kinds in ONE pass. Merge groups first so their renderAnchor
+  //    routing is established; regions never overlap them by construction.
+  //    Pass refsByOid so minted region rollups get `foldedRefs` populated.
+  const eff = applyCollapse(
+    nodes,
+    edges,
+    [...mergeGroups, ...regionGroups],
+    new Set<string>(),
+    nodeByOid,
+    refsByOid,
+  );
+
+  // Affordance metadata: which secondary paths are OFFERED right now
+  // (recursion-aware via `visibleMergeHideGroups`), with their folded state.
+  const affordancesByMerge = new Map<string, MergeAffordance[]>();
+  for (const group of visibleMergeHideGroups(nodes, edges, foldedMergePathIds)) {
+    const id = mergePathId(group.mergeOid, group.parentIndex);
+    const entry: MergeAffordance = {
+      parentIndex: group.parentIndex,
+      id,
+      hiddenCount: group.oids.length,
+      folded: foldedMergePathIds.has(id),
+      // Refs carried by this path's hidden members, head-vs-buried by group.oids
+      // order (newest-first, so oids[0] is the head member) — Req 16.2/17.
+      foldedRefs: foldedRefsFor(group.oids, refsByOid),
+    };
+    if (!affordancesByMerge.has(group.mergeOid)) {
+      affordancesByMerge.set(group.mergeOid, []);
+    }
+    affordancesByMerge.get(group.mergeOid)!.push(entry);
+  }
+
+  return { eff, mergeHidden, mergeGroups, regionGroups, affordancesByMerge };
 }

@@ -1,9 +1,11 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { GitMerge, ChevronsDownUp } from "lucide-react";
+import { GitMerge, GitBranch, ChevronsDownUp } from "lucide-react";
 import type { CommitNode, RefLabel } from "../../api/client";
+import type { MergeAffordance } from "./collapse";
+import FoldedRefBadge from "./FoldedRefBadge";
 
-interface CommitNodeData {
+interface MergeNodeData {
   commit: CommitNode;
   refs: RefLabel[];
   selected: boolean;
@@ -12,21 +14,45 @@ interface CommitNodeData {
   canCollapse?: boolean;
   /** Collapse the linear run this commit heads. */
   onCollapse?: (oid: string) => void;
+  /**
+   * One entry per secondary parent that currently has a non-empty hide set and
+   * is being OFFERED (recursion-aware). Empty for a merge with nothing to
+   * reveal (in which case this node still renders as a normal merge commit).
+   */
+  hiddenGroups: MergeAffordance[];
+  /** Fold/expand a specific secondary path, keyed on the stable merge oid. */
+  onTogglePath: (mergeOid: string, parentIndex: number, folded: boolean) => void;
 }
 
 /**
- * A single commit node in the React Flow graph. Renders the short hash, date,
- * summary, author, and any ref badges (branches/tags/HEAD) pointing at the
- * commit. Clicking it selects the commit (drives the detail panels).
+ * A merge commit rendered as a first-class node type. It looks like
+ * `CommitNodeComponent` (same visual structure AND the SAME handle geometry so
+ * edge routing / lane assignment behave identically) plus a discoverable
+ * hidden-branch affordance per secondary parent.
+ *
+ * Affordance model (Requirements 1.2–1.6, 9.2, 9.3, 11.1):
+ *  - one independently toggleable badge per secondary parent with a non-empty
+ *    hide set (octopus merges → multiple badges);
+ *  - folded → an "expand" affordance (branch glyph + hidden-commit count) whose
+ *    tooltip invites revealing the merged-in branch;
+ *  - expanded → a "collapse" affordance so the fold round-trip is reachable;
+ *  - clicking a badge calls `onTogglePath(mergeOid, parentIndex, folded)` and
+ *    stops propagation so it doesn't also select the commit.
  *
  * React Flow types `NodeProps.data` as `unknown`, so we cast it to
- * `CommitNodeData` — the shape we set when building nodes in `CommitGraph`.
- * Handle positions here are intentional: see CommitGraph's edge-routing notes
- * (parent commits sit BELOW their children, so the source handle is on top).
+ * `MergeNodeData` — the shape set when building nodes in `CommitGraph`.
  */
-function CommitNodeComponent({ data }: NodeProps) {
-  const { commit, refs, selected, onSelect, canCollapse, onCollapse } =
-    data as unknown as CommitNodeData;
+function MergeNodeComponent({ data }: NodeProps) {
+  const {
+    commit,
+    refs,
+    selected,
+    onSelect,
+    canCollapse,
+    onCollapse,
+    hiddenGroups,
+    onTogglePath,
+  } = data as unknown as MergeNodeData;
 
   const date = new Date(commit.timestamp * 1000);
   const dateStr = date.toLocaleDateString(undefined, {
@@ -42,13 +68,14 @@ function CommitNodeComponent({ data }: NodeProps) {
         "transition-colors duration-100",
         selected
           ? "border-blue-400 bg-blue-950/60 shadow-[0_0_0_2px_rgba(88,166,255,0.3)]"
-          : "border-[#30363d] bg-[#161b22] hover:border-[#58a6ff]/50",
+          : "border-purple-700/50 bg-[#161b22] hover:border-purple-400/60",
       ].join(" ")}
     >
-      {/* Fold control: collapse the linear run this commit heads. Anchored at the
-          node's TOP-RIGHT corner so it occupies the SAME spot as a summary
-          node's expand affordance — the control does not jump on fold/expand
-          (Req 19.1–19.3, Property 10). */}
+      {/* Fold control: collapse the linear run this merge node heads. Anchored at
+          the node's TOP-RIGHT corner so it lines up with the summary node's
+          expand affordance — the control does not jump on fold/expand
+          (Req 19.1–19.3, Property 10). This is the region-collapse control; the
+          per-secondary-parent hidden-branch affordances below are separate. */}
       {canCollapse && (
         <button
           onClick={(e) => {
@@ -62,7 +89,8 @@ function CommitNodeComponent({ data }: NodeProps) {
         </button>
       )}
 
-      {/* Handle geometry note:
+      {/* Handle geometry note (copied verbatim from CommitNodeComponent so a
+          merge node routes edges identically):
           Server edges run parent (source) → child (target). Commits are ordered
           newest-first, so a CHILD sits ABOVE its PARENT on screen. That means:
           - the source (parent) emits UPWARD  → source handle on the TOP
@@ -123,11 +151,11 @@ function CommitNodeComponent({ data }: NodeProps) {
         </div>
       )}
 
-      {/* Commit hash + date (+ subtle merge indicator for 2+ parents).
+      {/* Commit hash + date (+ merge glyph for the 2+-parent commit).
           `pr-5` when `canCollapse` reserves room for the absolutely-positioned
           top-right fold control so the date never sits under it — needed on
-          THIS (topmost) row for nodes with no ref badges (Req 24.1, 24.2, 24.4,
-          24.5, 25.1, 25.2). */}
+          THIS (topmost) row for merge nodes with no ref badges (Req 24.1, 24.2,
+          24.4, 24.5, 25.1, 25.2). */}
       <div
         className={[
           "flex items-center justify-between gap-2 mb-0.5",
@@ -135,9 +163,7 @@ function CommitNodeComponent({ data }: NodeProps) {
         ].join(" ")}
       >
         <span className="font-mono text-[#8b949e] flex items-center gap-1">
-          {commit.parents.length >= 2 && (
-            <GitMerge size={11} className="text-purple-400/80" aria-label="merge commit" />
-          )}
+          <GitMerge size={11} className="text-purple-400/80" aria-label="merge commit" />
           {commit.short_oid}
         </span>
         <span className="text-[#8b949e]">{dateStr}</span>
@@ -150,6 +176,51 @@ function CommitNodeComponent({ data }: NodeProps) {
 
       {/* Author */}
       <div className="text-[#8b949e] truncate mt-0.5">{commit.author_name}</div>
+
+      {/* Hidden-branch affordances: one per secondary parent with a non-empty
+          hide set. Folded → "reveal" control; expanded → "hide" control. Each
+          path also surfaces the refs carried by its hidden members as folded-ref
+          badges (head solid, buried outline) so a merged-in branch/tag is
+          visible without expanding it. */}
+      {hiddenGroups.length > 0 && (
+        <div className="flex flex-col gap-1 mt-1.5">
+          {hiddenGroups.map((g) => (
+            <div key={g.id} className="flex flex-wrap items-center gap-1">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onTogglePath(commit.oid, g.parentIndex, g.folded);
+                }}
+                title={
+                  g.folded
+                    ? `${g.hiddenCount} commits on a merged-in branch — click to reveal`
+                    : `Merged-in branch revealed (${g.hiddenCount} commits) — click to hide`
+                }
+                className={[
+                  "flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono leading-4 border transition-colors duration-100",
+                  g.folded
+                    ? "bg-purple-900/50 text-purple-200 border-purple-700/60 hover:border-purple-400/70"
+                    : "bg-purple-950/40 text-purple-300/80 border-dashed border-purple-700/50 hover:border-purple-400/70",
+                ].join(" ")}
+              >
+                <GitBranch size={10} className="shrink-0" />
+                <span>{g.hiddenCount}</span>
+                {g.folded ? null : (
+                  <ChevronsDownUp size={10} className="shrink-0 opacity-70" />
+                )}
+              </button>
+              {g.foldedRefs.length > 0 &&
+                g.foldedRefs.map((fr, i) => (
+                  <FoldedRefBadge
+                    key={`${g.id}-${fr.ref.name}-${i}`}
+                    ref={fr.ref}
+                    buried={fr.buried}
+                  />
+                ))}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Source handles (parent emits up to its child above) */}
       <Handle
@@ -174,4 +245,4 @@ function CommitNodeComponent({ data }: NodeProps) {
   );
 }
 
-export default memo(CommitNodeComponent);
+export default memo(MergeNodeComponent);

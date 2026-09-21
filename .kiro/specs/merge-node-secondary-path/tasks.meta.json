@@ -1,0 +1,386 @@
+{
+  "pbtResults": {
+    "5.2 Write property test for recursion": {
+      "status": "passed",
+      "lastRunTimestamp": 1789955966442
+    }
+  },
+  "executionHistory": {
+    "1.1 Add merge types and id helpers": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253856
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955257442
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955311393
+      }
+    ],
+    "1.2 Implement `reachableFrom(roots, nodes, edges)`": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253860
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955315851
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955358784
+      }
+    ],
+    "1.3 Implement `mergeSecondaryPath(mergeOid, parentIndex, nodes, edges)` and `mergeHideGroups(mergeOid, nodes, edges)`": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253863
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955362395
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955425037
+      }
+    ],
+    "2.1 Implement `mergeBaseFromEdges(a, b, nodes, edges)`": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253867
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955563625
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955686927
+      }
+    ],
+    "3.1 Add a `renderAnchor` group option to `applyCollapse`": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253869
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955432614
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955558453
+      }
+    ],
+    "4.1 Implement `leafTipVisibility(nodes, edges, refs)`": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253871
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955690034
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955814070
+      }
+    ],
+    "5.1 Recompute hide groups over newly-visible commits after expansion": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253873
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955831557
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956009331
+      }
+    ],
+    "6.1 Drive merge folds through the anchor-keyed fold model": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253876
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956015085
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956324569
+      }
+    ],
+    "6.2 Enforce coexistence ordering with region-collapse": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253878
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956015864
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956325579
+      }
+    ],
+    "7.1 Implement `MergeNodeComponent` with per-secondary-parent affordances": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253880
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956331870
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956504076
+      }
+    ],
+    "7.2 Register `merge` in `nodeTypes` and route merge commits to it": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253882
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956333232
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956505121
+      }
+    ],
+    "7.3 Verify component rendering via build + manual": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253884
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956502623
+      }
+    ],
+    "8.1 Add \"Active lines only\" (default) vs \"Full DAG\" toggle": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253887
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956514285
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956717756
+      }
+    ],
+    "9.1 Make stale merge-path anchors inert and re-appliable": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253889
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956334275
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956507277
+      }
+    ],
+    "10. Final checkpoint — full verification": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955253891
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956721481
+      },
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956747424
+      }
+    ],
+    "1. Implement the pure hide-set core in `collapse.ts`": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955425040
+      }
+    ],
+    "3. Extend `applyCollapse` for merge folding (Option A: existing render anchor)": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955558456
+      }
+    ],
+    "3.2 Write property test for orphan-safety of a merge fold": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955559316
+      }
+    ],
+    "2.2 Write unit tests for `mergeBaseFromEdges`": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955686045
+      }
+    ],
+    "2. Implement `mergeBaseFromEdges` for display and floor": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955686933
+      }
+    ],
+    "4.2 Write property test for the default-view leaf-tip rule": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955812197
+      }
+    ],
+    "4.3 Write unit tests for default-view worked cases": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955813028
+      }
+    ],
+    "4. Implement the default view (`leafTipVisibility`)": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789955814073
+      }
+    ],
+    "5.2 Write property test for recursion": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956008252
+      }
+    ],
+    "5. Implement recursive secondary-path reveal": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956009334
+      }
+    ],
+    "6.3 Write property test for reversibility": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956322223
+      }
+    ],
+    "6.4 Write property test for coexistence precedence": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956324203
+      }
+    ],
+    "6. Wire merge fold state into `CommitGraph.tsx`": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956325590
+      }
+    ],
+    "7. Add `MergeNodeComponent.tsx` and register the `merge` node type": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956505125
+      }
+    ],
+    "9.2 Write unit tests for degenerate handling": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956506542
+      }
+    ],
+    "9. Handle degenerate and stale-anchor cases": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956507280
+      }
+    ],
+    "8.2 Write unit tests for the toggle's seed flip": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956716817
+      }
+    ],
+    "8. Implement the global default-view toggle": [
+      {
+        "executionId": "570a1291-af4d-4cfb-9f2e-5a74cf9917a6",
+        "chatSessionId": "sess_86f51481-531f-4379-83e8-21dfd2abdacd",
+        "timestamp": 1789956717760
+      }
+    ]
+  }
+}
