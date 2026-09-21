@@ -71,6 +71,55 @@ origin, there are no ports to coordinate.
 Both binaries are produced by the same build, and the desktop bundle contains both — so a single
 installed package gives you the app *and* the standalone server.
 
+### Headless mode (servers, WSL, no display)
+
+The standalone server has **no GUI dependencies** — it is a pure HTTP server (Axum + git2 + rustls)
+that embeds and serves the web UI. It does **not** need GTK, WebKitGTK, X11/Wayland, or any font
+libraries, so it runs on a **headless** machine (a remote server, a container, or a bare WSL distro
+like Rocky Linux) where the desktop app cannot start:
+
+```bash
+git-atlas --headless ~/code/my-project     # bind, print the URL, DON'T try to open a browser
+```
+
+`--headless` (or `--no-browser`) skips the auto-open step — the only thing that would fail without a
+display — and just prints `http://localhost:PORT`. Open that URL from any browser that can reach the
+host (on WSL, a Windows browser via shared localhost; on a remote server, over an SSH tunnel or your
+network).
+
+The GitHub releases ship this as a standalone archive per platform —
+`git-atlas-standalone-<target-triple>.tar.gz` (`.zip` on Windows) — containing just the single
+self-contained `git-atlas` binary. Download it, extract, and run; nothing else to install.
+
+> **Why can't I just launch the desktop app with `--headless`?** Because the desktop package contains
+> *two* binaries with different jobs:
+>
+> - **`git-atlas-app`** — the Tauri shell you normally launch (the `.app`, the Start-menu entry). Its
+>   sole job is to open a native **WebView window**, which is what links against WebKitGTK/GTK/X11/fonts
+>   on Linux. It has no headless mode — a windowless GUI shell is a contradiction — so *this* is the
+>   binary that fails on a display-less box.
+> - **`git-atlas`** — the HTTP server, bundled *inside* the app package as a
+>   [sidecar](https://tauri.app/develop/sidecar/). This is the pure, GUI-free server, and it is the one
+>   that supports `--headless`.
+>
+> So on a headless machine you don't launch the shell — you run the **bundled server binary directly**.
+> You therefore usually don't need to download the separate standalone archive if the desktop package
+> is already installed; it's the same server binary either way. Where the sidecar lives:
+>
+> - **macOS:** inside the app bundle, next to the shell (Tauri strips the target-triple suffix):
+>   ```bash
+>   "/Applications/git-atlas.app/Contents/MacOS/git-atlas" --headless ~/code/my-project
+>   ```
+> - **Linux `.deb`/`.rpm`:** installed alongside the app executable. Find the exact path with
+>   `dpkg -L git-atlas` (Debian/Ubuntu) or `rpm -ql git-atlas` (RPM) and look for the `git-atlas` entry,
+>   then run it with `--headless`.
+> - **AppImage:** the sidecar lives *inside* the image (mounted at run time, not installed on the host).
+>   Extract it once with `./git-atlas_*.AppImage --appimage-extract`, then run
+>   `squashfs-root/usr/bin/git-atlas --headless ~/code/my-project`.
+>
+> If tracking down the bundled binary is more hassle than it's worth, just grab the standalone archive
+> instead — it's the same binary, packaged on its own.
+
 ## Prerequisites
 
 ### macOS
@@ -83,11 +132,19 @@ installed package gives you the app *and* the standalone server.
 - [mise](https://mise.jdx.dev)
 
 ### Linux
+These packages are needed **only to build or run the desktop app** (the Tauri/WebKitGTK shell):
 ```bash
 # Ubuntu / Debian
 sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 ```
 Plus [mise](https://mise.jdx.dev).
+
+> **Headless / no display?** You do **not** need any of the GTK/WebKit packages above to build or run
+> the standalone `git-atlas` server — it has no GUI dependencies. Just install [mise](https://mise.jdx.dev)
+> and build the server binary (`cargo build --release --bin git-atlas`), or download the
+> `git-atlas-standalone-<triple>` archive from a release. Use it with `--headless` (see
+> [Headless mode](#headless-mode-servers-wsl-no-display)). This is the right path for a bare WSL distro
+> (e.g. Rocky Linux) or a remote server.
 
 ## Setup
 
@@ -141,8 +198,12 @@ mise run build
 
 Outputs:
 
-- **Standalone server binary:** `target/release/git-atlas`
+- **Standalone server binary:** `target/release/git-atlas` — the headless-capable server (no GUI
+  deps; see [Headless mode](#headless-mode-servers-wsl-no-display))
 - **Packaged desktop app:** `target/release/bundle/`
+
+CI additionally publishes the standalone server as a `git-atlas-standalone-<target-triple>` archive
+on each release, so headless users can download just the server without the desktop installer.
 
 ## Packaged desktop client
 
@@ -295,6 +356,14 @@ The server serves the full UI and tries to auto-open your browser. Since Windows
 localhost (Windows 10 2004+), the app is reachable at `http://localhost:7842` from a Windows browser —
 if auto-open can't reach it, open that URL manually. (Pass `--no-browser` to skip the auto-open, or
 point the Windows Tauri app at the server by setting `ATLAS_PORT=7842` before launching it.)
+
+On a **bare / headless WSL distro** (e.g. Rocky Linux) that has no display and no GTK/WebKit
+libraries, the desktop app can't run — use the standalone server in
+[headless mode](#headless-mode-servers-wsl-no-display) instead:
+
+```bash
+git-atlas --headless ~/code/my-project     # no browser auto-open; just prints the URL
+```
 
 ## Project structure
 

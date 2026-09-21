@@ -210,6 +210,47 @@ jobs:
             lipo -info "ui/src-tauri/binaries/git-atlas-universal-apple-darwin"
           fi
 
+      # ── Package the STANDALONE server binary (headless / WSL / browser) ────
+      # The `git-atlas` server embeds ui/dist via rust-embed and serves the full
+      # app over HTTP with NO GTK/WebKit/X11/font dependencies — the intended
+      # path for headless machines (e.g. WSL). It was already compiled above to
+      # stage the Tauri sidecar; here we simply repackage that same binary as a
+      # standalone release artifact instead of throwing it away.
+      - name: Package standalone server
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXT=""
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then EXT=".exe"; fi
+
+          mkdir -p dist-standalone
+
+          # Resolve the binary to ship. For the macOS universal build, lipo the
+          # two arch slices into one portable binary; otherwise use the single
+          # target-triple build produced by the sidecar step.
+          if [[ "${{ matrix.rust_target }}" == "universal-apple-darwin" ]]; then
+            lipo -create \
+              "target/aarch64-apple-darwin/release/git-atlas" \
+              "target/x86_64-apple-darwin/release/git-atlas" \
+              -output "dist-standalone/git-atlas"
+            chmod +x "dist-standalone/git-atlas"
+          else
+            cp "target/${{ matrix.rust_target }}/release/git-atlas${EXT}" \
+               "dist-standalone/git-atlas${EXT}"
+          fi
+
+          # Archive: .zip on Windows, .tar.gz elsewhere. Name it by target triple
+          # so all three platforms' standalone binaries coexist on one Release.
+          ARCHIVE="git-atlas-standalone-${{ matrix.rust_target }}"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            ( cd dist-standalone && 7z a "../${ARCHIVE}.zip" "git-atlas${EXT}" >/dev/null )
+            echo "STANDALONE_ARCHIVE=${ARCHIVE}.zip" >> "$GITHUB_ENV"
+          else
+            tar -C dist-standalone -czf "${ARCHIVE}.tar.gz" "git-atlas${EXT}"
+            echo "STANDALONE_ARCHIVE=${ARCHIVE}.tar.gz" >> "$GITHUB_ENV"
+          fi
+          echo "==> packaged standalone server: ${STANDALONE_ARCHIVE:-${ARCHIVE}}"
+
       # ── Build & bundle the Tauri app (also creates the Release on tags) ────
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -239,11 +280,16 @@ jobs:
           files=$(find "$BUNDLE" -type f \
             \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' \
                -o -name '*.AppImage' -o -name '*.msi' -o -name '*.exe' \) 2>/dev/null || true)
+          # Also checksum the standalone server archive built above.
+          if [ -n "${STANDALONE_ARCHIVE:-}" ] && [ -f "$STANDALONE_ARCHIVE" ]; then
+            files=$(printf '%s\n%s' "$files" "$STANDALONE_ARCHIVE")
+          fi
           if [ -z "$files" ]; then
             echo "No installers found under $BUNDLE" >&2
           else
             if command -v sha256sum >/dev/null 2>&1; then HASH="sha256sum"; else HASH="shasum -a 256"; fi
             while IFS= read -r f; do
+              [ -n "$f" ] || continue
               ( cd "$(dirname "$f")" && $HASH "$(basename "$f")" )
             done <<< "$files" >> "$OUT"
           fi
@@ -260,6 +306,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Attach the standalone server archive to the Release (tags only). This is
+      # the headless / WSL / browser build — no GTK/WebKit/X11 needed to run it.
+      - name: Upload standalone server to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: ${{ env.STANDALONE_ARCHIVE }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       # ── Upload installers + checksums as workflow artifacts (every build) ──
       - name: Upload installers
         if: always()
@@ -269,6 +326,7 @@ jobs:
           if-no-files-found: warn
           path: |
             SHA256SUMS-${{ matrix.os }}.txt
+            ${{ env.STANDALONE_ARCHIVE }}
             target/${{ matrix.rust_target }}/release/bundle/dmg/*.dmg
             target/${{ matrix.rust_target }}/release/bundle/macos/*.app
             target/${{ matrix.rust_target }}/release/bundle/deb/*.deb
