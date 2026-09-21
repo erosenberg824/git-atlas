@@ -1,0 +1,31 @@
+{
+  "pbtResults": {
+    "1. Write bug condition exploration tests (BEFORE implementing any fix)": {
+      "status": "passed",
+      "failingExample": "Defect 3: detectBranchRollups returned [{ id: \"__branch__feature\", oids: [\"f1\"] }] for a one-unique-commit collapsed branch (expected []). Defect 2: selectionForSummaryNode(\"__branch__feature\", runNodes) returned null instead of newest oid \"f3\". Defect 1 (wiring): CommitGraph passes empty `expanded` set + includes branch rollups unconditionally; pure-mechanism test confirms applyCollapse+override un-folds once wired.",
+      "lastRunTimestamp": 1789945194528
+    },
+    "3.4 Verify bug condition exploration tests now pass": {
+      "status": "passed",
+      "lastRunTimestamp": 1789945234209
+    },
+    "5. Write bug condition exploration tests for the follow-up defects (BEFORE implementing any Round-2 fix)": {
+      "status": "passed",
+      "failingExample": "Bug condition exploration tests FAIL on current code as intended (this confirms the defects). Counterexamples: (Defect 4) resolveFoldState after expand→collapse of a run id leaves runNodes.has(runId)===false (group stays expanded — collapsedRuns never wins). (Defect 6) expandSeed(clickedId, groupOids, runs) returns only {clickedId}, omitting a second overlapping run id, so a re-detected sub-run re-folds the remainder. Defect 5's orphan is a component-level manifestation guarded by the orphanedMembers no-orphan invariant (verified via build+manual per design conventions).",
+      "lastRunTimestamp": 1789947237739
+    },
+    "6. Write preservation property tests for the round-trip pipeline (BEFORE implementing any Round-2 fix)": {
+      "status": "passed",
+      "lastRunTimestamp": 1789947286468
+    },
+    "7.5 Verify the follow-up bug condition exploration tests now pass": {
+      "status": "passed",
+      "lastRunTimestamp": 1789947550397
+    },
+    "7.6 Verify the round-trip preservation tests still pass": {
+      "status": "passed",
+      "lastRunTimestamp": 1789947553258
+    }
+  },
+  "executionHistory": {}
+}

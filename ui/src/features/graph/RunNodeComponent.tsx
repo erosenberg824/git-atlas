@@ -13,6 +13,10 @@ interface RunNodeProps extends CollapsedRunData {
  * date range. Clicking expands the run back into individual commit nodes.
  * Handle geometry matches CommitNodeComponent (source on top, target on bottom)
  * so it sits inline in the lane between the surrounding commits.
+ *
+ * Re-collapsing an expanded run is offered on the run-head commit node (the
+ * `ChevronsDownUp` control wired to `collapseAtCommit`), so the expand/collapse
+ * round-trip is reachable once a run is expanded (Defect 4).
  */
 function RunNodeComponent({ data }: NodeProps) {
   const d = data as unknown as RunNodeProps;
@@ -24,6 +28,11 @@ function RunNodeComponent({ data }: NodeProps) {
     month: "short",
     day: "numeric",
   });
+
+  const labelText = d.label ? `⑂ ${d.label}` : `${d.count} commits`;
+  const rangeText = d.label
+    ? `${d.count} commits · ${oldest} → ${newest}`
+    : `${oldest} → ${newest}`;
 
   return (
     <div
@@ -42,12 +51,17 @@ function RunNodeComponent({ data }: NodeProps) {
       <Handle id="s-top" type="source" position={Position.Top} className="!bg-[#30363d] !border-0" />
       <Handle id="t-bottom" type="target" position={Position.Bottom} className="!bg-[#30363d] !border-0" />
 
+      {/* Header row: icon + label. `min-w-0` lets the label `truncate` engage so
+          a long branch name stays within the fixed-width node box (Defect 7);
+          the full label is available on hover via `title`. */}
       <div className="flex items-center gap-1.5 mb-0.5 text-purple-200 font-semibold">
-        <ChevronsUpDown size={12} className="text-purple-300" />
-        {d.label ? `⑂ ${d.label}` : `${d.count} commits`}
+        <ChevronsUpDown size={12} className="text-purple-300 shrink-0" />
+        <span className="min-w-0 truncate" title={labelText}>
+          {labelText}
+        </span>
       </div>
-      <div className="text-[#8b949e] text-[11px]">
-        {d.label ? `${d.count} commits · ${oldest} → ${newest}` : `${oldest} → ${newest}`}
+      <div className="text-[#8b949e] text-[11px] truncate" title={rangeText}>
+        {rangeText}
       </div>
       <div className="text-[#6e7681] text-[10px] mt-0.5 truncate">click to expand</div>
     </div>

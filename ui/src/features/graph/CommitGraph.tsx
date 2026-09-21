@@ -18,14 +18,18 @@ import type { CommitNode, RefLabel, GraphResponse, StatusSummary } from "../../a
 import CommitNodeComponent from "./CommitNodeComponent";
 import SpecialNodeComponent from "./SpecialNodeComponent";
 import RunNodeComponent from "./RunNodeComponent";
-import { detectRuns, detectBranchRollups, applyCollapse, isCollapsedRunId } from "./collapse";
+import { regionAround, regionsFromAnchors, autoCollapseAnchors, applyCollapse, isCollapsedRunId, anchorFromId, selectionForSummaryNode } from "./collapse";
 
 interface CommitGraphProps {
   graph: GraphResponse;
   status?: StatusSummary | null;
   selectedOid: string | null;
   onSelectCommit: (oid: string) => void;
-  /** Per-branch visibility; branches marked "collapsed" fold into rollup nodes. */
+  /**
+   * Per-branch visibility. Round 3: folding is no longer driven by this — it
+   * governs server-ref scoping in App.tsx (branches.ts) only, and is retained
+   * here for a future BranchControl-driven per-branch fold (2.14, out of scope).
+   */
   branchVisibility?: Map<string, import("./branches").BranchVisibility>;
   /** When set, center + select this commit oid (find/jump). */
   jumpToOid?: string | null;
@@ -153,7 +157,6 @@ export default function CommitGraph({
   status,
   selectedOid,
   onSelectCommit,
-  branchVisibility,
   jumpToOid,
   onJumpConsumed,
 }: CommitGraphProps) {
@@ -166,13 +169,21 @@ export default function CommitGraph({
     return map;
   }, [graph.refs]);
 
-  // ── Collapse/expand of linear runs ───────────────────────────────────────
-  // Manual overrides on top of the auto heuristic:
-  //  - expandedRuns: auto-collapsed runs the user force-expanded.
-  //  - collapsedRuns: runs the user force-collapsed manually (incl. short runs
-  //    below the auto threshold).
-  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
-  const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set());
+  // ── On-demand contiguous-region collapse (Round 3) ────────────────────────
+  // The fold unit is a contiguous region keyed on the CLICKED commit's stable
+  // oid (its anchor). Fold/expand state is anchor-keyed so it stays consistent
+  // as the graph shifts (Defect 1.9). This replaces the old linear-run +
+  // branch-rollup fold mechanism entirely (2.12); branch-visibility server-ref
+  // scoping is unchanged and lives in App.tsx (branches.ts), not here (3.11).
+  //
+  //  - foldAnchors:  anchor oids currently folded (auto-seed on load + manual).
+  //  - userExpanded: anchors of auto-folded regions the user has opened.
+  // A region is rendered folded when its anchor is in foldAnchors AND not in
+  // userExpanded — a manual expand authoritatively wins over the auto seed, and
+  // a manual collapse (re-adding to foldAnchors, clearing userExpanded) wins
+  // back, so the fold→expand→collapse round-trip is reversible (Defect 4).
+  const [foldAnchors, setFoldAnchors] = useState<Set<string>>(new Set());
+  const [userExpanded, setUserExpanded] = useState<Set<string>>(new Set());
 
   const nodeByOid = useMemo(() => {
     const m = new Map<string, CommitNode>();
@@ -180,100 +191,96 @@ export default function CommitGraph({
     return m;
   }, [graph.nodes]);
 
-  // Detect ALL foldable linear runs of length >= 2 (so short runs can be
-  // manually collapsed too). Auto-collapse only applies to long ones.
-  const runs = useMemo(
-    () => detectRuns(graph.nodes, graph.edges, refsByOid, selectedOid, 2),
-    [graph.nodes, graph.edges, refsByOid, selectedOid]
-  );
-
   const AUTO_COLLAPSE_LEN = 8;
-  // A run is rendered collapsed if the user collapsed it, OR it's long enough to
-  // auto-collapse and the user hasn't force-expanded it.
-  const runsToCollapse = useMemo(
-    () =>
-      runs.filter(
-        (r) =>
-          collapsedRuns.has(r.id) ||
-          (r.oids.length >= AUTO_COLLAPSE_LEN && !expandedRuns.has(r.id)),
-      ),
-    [runs, collapsedRuns, expandedRuns]
-  );
 
-  // Branch "virtual squash" rollups: for each branch marked "collapsed" in
-  // branchVisibility, fold its unique commits (vs. expanded branches) into one
-  // rollup group. Combined with linear runs and fed to applyCollapse together.
-  const branchRollups = useMemo(() => {
-    if (!branchVisibility || branchVisibility.size === 0) return [];
-    const tipByBranch = new Map<string, string>();
-    for (const r of graph.refs) {
-      if (r.kind === "branch" || r.kind === "remotebranch") tipByBranch.set(r.name, r.oid);
-    }
-    const collapsedTips: { name: string; tip: string }[] = [];
-    const expandedTips: string[] = [];
-    for (const [name, vis] of branchVisibility) {
-      const tip = tipByBranch.get(name);
-      if (!tip) continue;
-      if (vis === "collapsed") collapsedTips.push({ name, tip });
-      else if (vis === "expanded") expandedTips.push(tip);
-    }
-    return detectBranchRollups(graph.nodes, graph.edges, collapsedTips, expandedTips);
-  }, [graph.nodes, graph.edges, graph.refs, branchVisibility]);
-
-  const allGroups = useMemo(
-    () => [...branchRollups, ...runsToCollapse],
-    [branchRollups, runsToCollapse]
-  );
-
-  const collapsed = useMemo(
-    () => applyCollapse(graph.nodes, graph.edges, allGroups, new Set<string>(), nodeByOid),
-    [graph.nodes, graph.edges, allGroups, nodeByOid]
-  );
-
-  // Effective edge list + run summary nodes after collapsing — everything
-  // downstream (lanes, positions, flow nodes/edges) operates on these.
-  const effEdges = collapsed.edges;
-  const runNodes = collapsed.runNodes;
-
-  const expandRun = useCallback((id: string) => {
-    setExpandedRuns((prev) => new Set(prev).add(id));
-    setCollapsedRuns((prev) => {
-      if (!prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
-  }, []);
-
-  // Collapse the foldable linear run that `oid` belongs to (manual collapse).
-  // Finds the run containing the commit and force-collapses it.
-  const collapseAtCommit = useCallback(
-    (oid: string) => {
-      const run = runs.find((r) => r.oids.includes(oid));
-      if (!run) return;
-      setCollapsedRuns((prev) => new Set(prev).add(run.id));
-      setExpandedRuns((prev) => {
-        if (!prev.has(run.id)) return prev;
-        const next = new Set(prev);
-        next.delete(run.id);
-        return next;
-      });
-    },
-    [runs]
-  );
-
-  // Which commits are the head of a foldable run (for showing a collapse control).
-  const runHeadOf = useMemo(() => {
-    const m = new Map<string, string>(); // headOid -> runId
-    for (const r of runs) m.set(r.oids[0], r.id);
-    return m;
-  }, [runs]);
-
-  // The commit HEAD points at — anchors the trunk (lane 0) and the working node.
+  // The commit HEAD points at — anchors the trunk (lane 0) and the working node,
+  // and is the exemption anchor for the auto-collapse seed (2.13).
   const headOid = useMemo(() => {
     const head = graph.refs.find((r) => r.is_head);
     return head?.oid ?? graph.nodes[0]?.oid ?? null;
   }, [graph.refs, graph.nodes]);
+
+  // On load / whenever the graph changes, seed the auto-collapse anchors: every
+  // contiguous region >= AUTO_COLLAPSE_LEN EXCEPT regions on the HEAD trunk
+  // (2.13, reconciling 3.6). Resetting on graph change keeps the seed keyed to
+  // the current node set; manual fold/expand state is re-derived from anchors,
+  // which are stable oids, so a live-update graph shift doesn't desync it.
+  useEffect(() => {
+    const seed = autoCollapseAnchors(
+      graph.nodes,
+      graph.edges,
+      headOid,
+      refsByOid,
+      AUTO_COLLAPSE_LEN,
+    );
+    setFoldAnchors(new Set(seed));
+    setUserExpanded(new Set());
+  }, [graph.nodes, graph.edges, headOid, refsByOid]);
+
+  // Effective folded anchors: folded unless the user expanded them.
+  const effectiveFolded = useMemo(() => {
+    const out = new Set<string>();
+    for (const a of foldAnchors) if (!userExpanded.has(a)) out.add(a);
+    return out;
+  }, [foldAnchors, userExpanded]);
+
+  // Build region groups from the effectively-folded anchors and apply the
+  // collapse. `applyCollapse` is reused UNCHANGED — because each region is a
+  // single contiguous chain with one entry + one exit edge, the reroute is
+  // exact and orphan-free (Defect 1.8).
+  const regionGroups = useMemo(
+    () => regionsFromAnchors(effectiveFolded, graph.nodes, graph.edges, refsByOid, selectedOid),
+    [effectiveFolded, graph.nodes, graph.edges, refsByOid, selectedOid]
+  );
+
+  const collapsed = useMemo(
+    () => applyCollapse(graph.nodes, graph.edges, regionGroups, new Set<string>(), nodeByOid),
+    [graph.nodes, graph.edges, regionGroups, nodeByOid]
+  );
+
+  // Effective edge list + region summary nodes after collapsing — everything
+  // downstream (lanes, positions, flow nodes/edges) operates on these.
+  const effEdges = collapsed.edges;
+  const runNodes = collapsed.runNodes;
+
+  // Fold the contiguous region anchored at `oid` (manual collapse). Single fold
+  // entry point — structured so a future BranchControl per-branch fold can call
+  // it with a branch-derived anchor (2.14, picker wiring out of scope).
+  const collapseRegion = useCallback((oid: string) => {
+    setFoldAnchors((prev) => new Set(prev).add(oid));
+    setUserExpanded((prev) => {
+      if (!prev.has(oid)) return prev;
+      const next = new Set(prev);
+      next.delete(oid);
+      return next;
+    });
+  }, []);
+
+  // Expand the region anchored at `oid` (removes from foldAnchors / records in
+  // userExpanded). Because one anchor id maps to the whole contiguous region,
+  // the entire group un-folds in one action (Defect 6, trivially satisfied).
+  const expandRegion = useCallback((oid: string) => {
+    setUserExpanded((prev) => new Set(prev).add(oid));
+    setFoldAnchors((prev) => {
+      if (!prev.has(oid)) return prev;
+      const next = new Set(prev);
+      next.delete(oid);
+      return next;
+    });
+  }, []);
+
+  // Which commits are eligible for an on-demand collapse control: any commit
+  // whose contiguous region has >= 2 members (Defect 1.10, 2.8). Memoized over
+  // the loaded graph so we don't recompute regionAround per node in render.
+  const regionEligible = useMemo(() => {
+    const set = new Set<string>();
+    for (const n of graph.nodes) {
+      if (regionAround(n.oid, graph.nodes, graph.edges, refsByOid, selectedOid)) {
+        set.add(n.oid);
+      }
+    }
+    return set;
+  }, [graph.nodes, graph.edges, refsByOid, selectedOid]);
 
   // Combined render order: walk the ORIGINAL graph order; when we hit a commit
   // that folded into a run, emit the run node once (at the position of its
@@ -350,7 +357,7 @@ export default function CommitGraph({
             data: {
               ...runData,
               selected: id === selectedOid,
-              onExpand: expandRun,
+              onExpand: (rid: string) => expandRegion(anchorFromId(rid)),
             },
             selected: id === selectedOid,
           } as Node;
@@ -366,14 +373,14 @@ export default function CommitGraph({
             refs: refsByOid.get(id) ?? [],
             selected: id === selectedOid,
             onSelect: onSelectCommit,
-            canCollapse: runHeadOf.has(id),
-            onCollapse: collapseAtCommit,
+            canCollapse: regionEligible.has(id),
+            onCollapse: collapseRegion,
           },
           selected: id === selectedOid,
         } as Node;
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [renderOrder, lanes, refsByOid, selectedOid, onSelectCommit, runNodes, nodeByOid, effEdges, runHeadOf, collapseAtCommit]
+    [renderOrder, lanes, refsByOid, selectedOid, onSelectCommit, runNodes, nodeByOid, effEdges, regionEligible, collapseRegion, expandRegion]
   );
 
   // Working-tree pseudo-node (working + staged) + one node per stash.
@@ -568,14 +575,18 @@ export default function CommitGraph({
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
-      // Clicking a collapsed run expands it; otherwise select the commit.
+      // Clicking a collapsed region summary node expands the whole region AND
+      // selects a representative commit (its newest member) so the right pane
+      // updates coherently. Otherwise select the clicked commit.
       if (isCollapsedRunId(node.id)) {
-        expandRun(node.id);
+        expandRegion(anchorFromId(node.id));
+        const rep = selectionForSummaryNode(node.id, runNodes);
+        if (rep) onSelectCommit(rep);
       } else {
         onSelectCommit(node.id);
       }
     },
-    [onSelectCommit, expandRun]
+    [onSelectCommit, expandRegion, runNodes]
   );
 
   // Jump to the top of the graph (newest commit) — panning a tall graph to the
