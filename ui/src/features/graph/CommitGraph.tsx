@@ -953,11 +953,28 @@ export default function CommitGraph({
             if (node.id === WORKING_NODE_ID) return "#34d399";
             if (isStashId(node.id)) return "#fbbf24";
             if (isCollapsedRunId(node.id)) return "#a855f7";
-            return node.selected ? "#58a6ff" : "#6e7681";
+            // Brighter default fill so nodes stay legible when a tall graph is
+            // scaled way down and each node becomes a couple of pixels.
+            return node.selected ? "#79c0ff" : "#8b949e";
           }}
-          nodeStrokeColor="#30363d"
-          maskColor="rgba(88,166,255,0.10)"
-          className="!bg-[#161b22] !border !border-[#30363d] !rounded"
+          nodeStrokeColor="#484f58"
+          // Node rects are drawn in flow coordinates then scaled to fit the map,
+          // so on a large graph they shrink to dots. A wider stroke keeps each
+          // node's outline visible instead of fading into the background.
+          nodeStrokeWidth={6}
+          nodeBorderRadius={4}
+          // Darken the area outside the viewport and give the viewport rect a
+          // bright outline, so the current view stays findable even when it's a
+          // tiny sliver of a tall graph.
+          maskColor="rgba(1,4,9,0.6)"
+          maskStrokeColor="#3d6fb0"
+          maskStrokeWidth={2}
+          // No width/height props in v12 — size the widget purely with CSS. A
+          // fixed, capped box letterboxes tall graphs inside it (SVG preserves
+          // aspect ratio) instead of stretching the widget tall with empty
+          // space down the sides.
+          style={{ width: 200, height: 160 }}
+          className="!bg-[#161b22] !border !border-[#484f58] !rounded"
         />
       </ReactFlow>
     </div>
