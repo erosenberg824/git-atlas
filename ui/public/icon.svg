@@ -1,0 +1,21 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Bright tile so the favicon stays visible on light AND dark browser tab bars -->
+  <rect width="512" height="512" rx="96" fill="#58a6ff"/>
+
+  <!-- Commit DAG, enlarged to fill the frame with thick strokes for small sizes -->
+  <g stroke="#0d1117" stroke-width="40" stroke-linecap="round" fill="none">
+    <!-- trunk -->
+    <path d="M156 108 V404"/>
+    <!-- branch out and merge back -->
+    <path d="M156 196 C 156 268, 356 244, 356 316"/>
+    <path d="M356 316 C 356 388, 156 364, 156 404"/>
+  </g>
+
+  <!-- commit nodes: dark ring + bright center so they read at 16px -->
+  <g fill="#58a6ff" stroke="#0d1117" stroke-width="34">
+    <circle cx="156" cy="108" r="46"/>
+    <circle cx="156" cy="256" r="46"/>
+    <circle cx="156" cy="404" r="46"/>
+    <circle cx="356" cy="316" r="46"/>
+  </g>
+</svg>
