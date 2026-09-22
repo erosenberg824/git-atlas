@@ -105,8 +105,8 @@ function MergeNodeComponent({ data }: NodeProps) {
         position={Position.Bottom}
         className="!bg-[#30363d] !border-0"
       />
-      {/* Top target handle: used by the "Working tree" pseudo-node, which sits
-          above HEAD and connects down into the top of the HEAD commit. */}
+      {/* Top target handle: retained as a hidden alternate. (The working-tree
+          node now connects via HEAD's top source handle, not into this one.) */}
       <Handle
         id="t-top"
         type="target"

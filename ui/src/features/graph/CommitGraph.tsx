@@ -166,9 +166,66 @@ export function assignLanes(
 // Node card is ~110px tall at its largest (padding + ref badges + hash/date +
 // summary + author). Keep ROW_HEIGHT comfortably above that so rows never overlap.
 const ROW_HEIGHT = 120;
-const LANE_WIDTH = 180;
+// Lane spacing must exceed the widest node card (special/run cards are up to
+// 210px, commit/merge up to 200px) plus a gap, or adjacent-lane cards overlap
+// on their edges. 210px max card + 30px gap = 240.
+const LANE_WIDTH = 240;
 const X_BASE = 24;
 const Y_BASE = 24;
+
+export interface WorkingPlacement {
+  /** Lane (column) the working node occupies. */
+  lane: number;
+  /** Row index the working node occupies (HEAD's row − 1). */
+  row: number;
+  /** True when the node sits right of HEAD's lane (HEAD is not a leaf). */
+  offset: boolean;
+  x: number;
+  y: number;
+}
+
+/**
+ * Decide where the "Working tree" pseudo-node sits. It anchors one row ABOVE
+ * HEAD. In HEAD's own lane when that cell is free (HEAD is a leaf); otherwise it
+ * slides RIGHT to the lowest free lane on that row so it never overlaps HEAD's
+ * child commit(s) or any other branch occupying that row.
+ *
+ * Pure and total: given the row index of every rendered node (`rowOf`) and each
+ * node's lane (`laneOf`), it returns a cell guaranteed not to collide with any
+ * rendered node — the chosen (lane, row) is checked against every occupant of
+ * that row. Returns null when HEAD isn't in the rendered window.
+ *
+ * Exported for unit testing (no DOM / React Flow needed).
+ */
+export function computeWorkingPlacement(
+  headOid: string | null,
+  rowOf: Map<string, number>,
+  laneOf: Map<string, number>,
+): WorkingPlacement | null {
+  if (!headOid) return null;
+  const headRow = rowOf.get(headOid);
+  if (headRow === undefined) return null;
+  const headLane = laneOf.get(headOid) ?? 0;
+  const targetRow = headRow - 1;
+
+  // Lanes occupied by any rendered node on the target row.
+  const occupiedLanes = new Set<number>();
+  for (const [id, r] of rowOf) {
+    if (r === targetRow) occupiedLanes.add(laneOf.get(id) ?? 0);
+  }
+
+  // Lowest free lane at or to the right of HEAD's lane.
+  let lane = headLane;
+  while (occupiedLanes.has(lane)) lane++;
+
+  return {
+    lane,
+    row: targetRow,
+    offset: lane !== headLane,
+    x: X_BASE + lane * LANE_WIDTH,
+    y: Y_BASE + targetRow * ROW_HEIGHT,
+  };
+}
 
 export default function CommitGraph({
   graph,
@@ -539,33 +596,45 @@ export default function CommitGraph({
     [renderOrder, lanes, refsByOid, selectedOid, onSelectCommit, runNodes, nodeByOid, effEdges, regionEligible, onCollapseNode, expandRegion, resolved.affordancesByMerge, onTogglePath]
   );
 
+  // Working-tree pseudo-node placement (shared by the node and its edge). It
+  // normally sits one row ABOVE HEAD in HEAD's lane. But when HEAD is NOT a leaf,
+  // that row/lane is occupied by HEAD's child commit(s), so we place the working
+  // node in a FREE lane on that row: compute the lanes occupied at the target row
+  // (HEAD's row index − 1) across all rendered nodes, then pick the lowest free
+  // lane at or to the RIGHT of HEAD's lane. If HEAD is a leaf its own lane is
+  // free and the node sits straight above, as before. `offset` is true when the
+  // node ended up right of HEAD (used to route the edge through HEAD's side).
+  const workingPlacement = useMemo(
+    () => computeWorkingPlacement(headOid, indexByOid, lanes),
+    [headOid, indexByOid, lanes],
+  );
+
   // Working-tree pseudo-node (working + staged) + one node per stash.
   const specialNodes: Node[] = useMemo(() => {
     if (!status) return [];
     const out: Node[] = [];
 
-    // Working node: above HEAD, in HEAD's lane, only if the tree is dirty.
-    if (status.is_dirty && headOid) {
-      const base = posFor(headOid);
-      if (base) {
-        out.push({
+    if (workingPlacement) {
+      out.push({
+        id: WORKING_NODE_ID,
+        type: "special",
+        position: { x: workingPlacement.x, y: workingPlacement.y },
+        data: {
           id: WORKING_NODE_ID,
-          type: "special",
-          position: { x: base.x, y: base.y - ROW_HEIGHT },
-          data: {
-            id: WORKING_NODE_ID,
-            kind: "working",
-            title: "Working tree",
-            badges: [
-              { label: "staged", value: status.staged_count },
-              { label: "unstaged", value: status.unstaged_count },
-            ],
-            selected: selectedOid === WORKING_NODE_ID,
-            onSelect: onSelectCommit,
-          },
+          kind: "working",
+          title: "Working tree",
+          subtitle: status.is_dirty ? undefined : "clean — no changes",
+          badges: status.is_dirty
+            ? [
+                { label: "staged", value: status.staged_count },
+                { label: "unstaged", value: status.unstaged_count },
+              ]
+            : undefined,
           selected: selectedOid === WORKING_NODE_ID,
-        });
-      }
+          onSelect: onSelectCommit,
+        },
+        selected: selectedOid === WORKING_NODE_ID,
+      });
     }
 
     // Stash nodes: placed to the right of their base commit's lane.
@@ -595,7 +664,7 @@ export default function CommitGraph({
 
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, headOid, indexByOid, lanes, selectedOid, onSelectCommit]);
+  }, [status, workingPlacement, indexByOid, lanes, selectedOid, onSelectCommit]);
 
   const flowEdges: Edge[] = useMemo(
     () =>
@@ -646,13 +715,22 @@ export default function CommitGraph({
     if (!status) return [];
     const out: Edge[] = [];
 
-    if (status.is_dirty && headOid && indexByOid.has(headOid)) {
+    // Working → HEAD dashed edge. Rendered whenever HEAD is in the loaded
+    // window, matching the always-on working node above (independent of dirty).
+    if (headOid && indexByOid.has(headOid)) {
+      // Arrow points HEAD → working: HEAD (below on screen) emits toward the
+      // working node's bottom. Direction reads as "the tip commit leads into
+      // the uncommitted working state". When the working node is offset to the
+      // RIGHT (HEAD is not a leaf), emit from HEAD's right side so the line
+      // bends cleanly instead of cutting across HEAD's children; otherwise emit
+      // straight up from HEAD's top.
+      const offset = workingPlacement?.offset ?? false;
       out.push({
-        id: `${WORKING_NODE_ID}-${headOid}`,
-        source: WORKING_NODE_ID,
-        target: headOid,
-        sourceHandle: "s-bottom",
-        targetHandle: "t-top",
+        id: `${headOid}-${WORKING_NODE_ID}`,
+        source: headOid,
+        target: WORKING_NODE_ID,
+        sourceHandle: offset ? "s-right" : "s-top",
+        targetHandle: "t-bottom",
         type: "default",
         style: { stroke: "#2f855a", strokeWidth: 2, strokeDasharray: "4 3" },
         markerEnd: { type: MarkerType.ArrowClosed, color: "#2f855a" },
@@ -676,7 +754,7 @@ export default function CommitGraph({
     });
 
     return out;
-  }, [status, headOid, indexByOid]);
+  }, [status, headOid, indexByOid, workingPlacement]);
 
   const allNodes = useMemo(
     () => [...flowNodes, ...specialNodes],

@@ -37,11 +37,20 @@ function SpecialNodeComponent({ data }: NodeProps) {
             : "border-amber-700/60 bg-amber-950/20 hover:border-amber-400/70",
       ].join(" ")}
     >
-      {/* Source handle: these nodes sit above their base commit, so they emit
-          downward from the bottom toward the commit they build on. */}
+      {/* Source handle: kept for stash pseudo-nodes, which sit beside their
+          base commit and emit toward it. */}
       <Handle
         id="s-bottom"
         type="source"
+        position={Position.Bottom}
+        className="!bg-transparent !border-0"
+      />
+
+      {/* Target handle: the working-tree node sits ABOVE HEAD and receives the
+          HEAD → working edge into its bottom. */}
+      <Handle
+        id="t-bottom"
+        type="target"
         position={Position.Bottom}
         className="!bg-transparent !border-0"
       />
