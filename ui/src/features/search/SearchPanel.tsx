@@ -2,6 +2,17 @@ import { useState, useRef } from "react";
 import { Search, Loader2 } from "lucide-react";
 import { api, type SearchResponse } from "../../api/client";
 
+/**
+ * Whether the search trigger should be disabled.
+ * Disabled when a search is in flight, or the query is empty/whitespace-only.
+ * The emptiness definition (`query.trim().length === 0`) is intentionally
+ * identical to the `!q.trim()` guard inside `runSearch`, so the button's
+ * disabled state and the search guard agree on what "empty" means.
+ */
+export function isSearchDisabled(query: string, loading: boolean): boolean {
+  return loading || query.trim().length === 0;
+}
+
 interface SearchPanelProps {
   /** Commit to search at (full-text search is scoped to a commit's tree). Null = none selected. */
   commitOid: string | null;
@@ -44,7 +55,19 @@ export default function SearchPanel({ commitOid, onSelectFile }: SearchPanelProp
       {/* Search input */}
       <div className="p-3 border-b border-[#30363d]">
         <div className="flex items-center gap-2 bg-[#0d1117] border border-[#30363d] rounded-md px-3 py-1.5 focus-within:border-blue-500/60">
-          <Search size={14} className="text-[#8b949e] shrink-0" />
+          <button
+            type="button"
+            onClick={() => runSearch(query)}
+            disabled={isSearchDisabled(query, loading)}
+            aria-label="Run search"
+            className="shrink-0 text-[#8b949e] hover:text-[#e6edf3] disabled:opacity-50 disabled:cursor-default transition-colors"
+          >
+            {loading ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Search size={14} />
+            )}
+          </button>
           <input
             ref={inputRef}
             type="text"
@@ -54,7 +77,6 @@ export default function SearchPanel({ commitOid, onSelectFile }: SearchPanelProp
             placeholder="Search files at this commit…"
             className="flex-1 bg-transparent text-sm text-[#e6edf3] outline-none placeholder:text-[#8b949e]"
           />
-          {loading && <Loader2 size={14} className="text-[#8b949e] animate-spin" />}
         </div>
         {commitOid && (
           <p className="text-[10px] text-[#8b949e] mt-1 font-mono">
