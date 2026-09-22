@@ -566,6 +566,76 @@ export function detectRuns(
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
+ * Pre-computed topological adjacency over an in-graph node set — the maps that
+ * `regionAround` needs to decide foldability, plus the ordered oid list used to
+ * emit region members newest-first.
+ *
+ * Built ONCE per (nodes, edges, refsByOid) via {@link buildAdjacency} and
+ * threaded through the per-node region scans (`foldableNodeIds`,
+ * `autoCollapseAnchors`, `regionsFromAnchors`). This is what makes those scans
+ * O(N + E) instead of O(N²): previously each `regionAround` call rebuilt these
+ * maps (an O(N + E) sweep) inside an O(N) loop. The maps are read-only — the
+ * commit graph is immutable for a given node set — so sharing one instance
+ * across every call in a pass is safe.
+ */
+export interface Adjacency {
+  /** Every in-graph oid, for O(1) membership tests. */
+  inGraph: Set<string>;
+  /** oid → number of in-graph children (edges run parent(source)→child(target)). */
+  childCount: Map<string, number>;
+  /** oid → number of in-graph parents. */
+  parentCount: Map<string, number>;
+  /** child.target → its single in-graph parent (last writer wins; only meaningful when parentCount === 1). */
+  parentOf: Map<string, string>;
+  /** parent.source → its single in-graph child (last writer wins; only meaningful when childCount === 1). */
+  childOf: Map<string, string>;
+  /** oids carrying the checked-out HEAD (never foldable / never region members). */
+  headOids: Set<string>;
+  /** All in-graph oids in graph order (newest-first, topological). */
+  order: string[];
+}
+
+/**
+ * Build the shared {@link Adjacency} for a node set in a single O(N + E) sweep.
+ * Call this once at the top of a pass that scans many commits and pass the
+ * result into {@link regionAround} so the maps are not rebuilt per call.
+ */
+export function buildAdjacency(
+  nodes: CommitNode[],
+  edges: CommitEdge[],
+  refsByOid: Map<string, RefLabel[]>,
+): Adjacency {
+  const inGraph = new Set(nodes.map((n) => n.oid));
+  const childCount = new Map<string, number>();
+  const parentCount = new Map<string, number>();
+  const parentOf = new Map<string, string>();
+  const childOf = new Map<string, string>();
+  for (const e of edges) {
+    if (!inGraph.has(e.source) || !inGraph.has(e.target)) continue;
+    childCount.set(e.source, (childCount.get(e.source) ?? 0) + 1);
+    parentCount.set(e.target, (parentCount.get(e.target) ?? 0) + 1);
+    parentOf.set(e.target, e.source);
+    childOf.set(e.source, e.target);
+  }
+  const headOids = new Set<string>();
+  for (const n of nodes) {
+    const refs = refsByOid.get(n.oid);
+    if (refs && refs.some((r) => r.is_head || r.kind === "head")) {
+      headOids.add(n.oid);
+    }
+  }
+  return {
+    inGraph,
+    childCount,
+    parentCount,
+    parentOf,
+    childOf,
+    headOids,
+    order: nodes.map((n) => n.oid),
+  };
+}
+
+/**
  * The maximal contiguous foldable chain around `oid`.
  *
  * Walks DOWN via the single in-graph first-parent while each commit is foldable
@@ -583,33 +653,28 @@ export function detectRuns(
  * a region boundary (Property 11): the selected commit is treated exactly like
  * any other commit, so the region set is invariant across different selections
  * and the selected commit keeps its fold control.
+ *
+ * PERFORMANCE: pass a pre-built {@link Adjacency} (`adj`) when scanning many
+ * commits in a loop — that reuses one O(N + E) sweep across all calls, making
+ * the loop O(N + E) instead of O(N²). When omitted, the adjacency is built
+ * internally (convenient for one-off calls and to keep the original 4-arg
+ * signature working for existing callers/tests).
  */
 export function regionAround(
   oid: string,
   nodes: CommitNode[],
   edges: CommitEdge[],
   refsByOid: Map<string, RefLabel[]>,
+  adj?: Adjacency,
 ): string[] | null {
-  const inGraph = new Set(nodes.map((n) => n.oid));
+  const { inGraph, childCount, parentCount, parentOf, childOf, headOids, order } =
+    adj ?? buildAdjacency(nodes, edges, refsByOid);
   if (!inGraph.has(oid)) return null;
 
-  // In-graph parent/child degree per commit (edges run parent(source)→child(target)).
-  const childCount = new Map<string, number>();
-  const parentCount = new Map<string, number>();
-  const parentOf = new Map<string, string>(); // child.target -> its single in-graph parent
-  const childOf = new Map<string, string>(); // parent.source -> its single in-graph child
-  for (const e of edges) {
-    if (!inGraph.has(e.source) || !inGraph.has(e.target)) continue;
-    childCount.set(e.source, (childCount.get(e.source) ?? 0) + 1);
-    parentCount.set(e.target, (parentCount.get(e.target) ?? 0) + 1);
-    parentOf.set(e.target, e.source);
-    childOf.set(e.source, e.target);
-  }
-
   // A commit carries the checked-out HEAD when its ref list has a HEAD entry
-  // (`is_head` primarily; `kind === "head"` belt-and-suspenders).
-  const isHead = (x: string): boolean =>
-    (refsByOid.get(x) ?? []).some((r) => r.is_head || r.kind === "head");
+  // (`is_head` primarily; `kind === "head"` belt-and-suspenders). Precomputed
+  // in `buildAdjacency` so this is an O(1) set lookup.
+  const isHead = (x: string): boolean => headOids.has(x);
 
   const foldable = (x: string): boolean => {
     // Refs (branch/remote-branch/tag) NO LONGER block folding — they surface as
@@ -655,7 +720,7 @@ export function regionAround(
   if (members.size < 2) return null;
 
   // Order newest-first by graph order (nodes are newest-first, topological).
-  const ordered = nodes.map((n) => n.oid).filter((o) => members.has(o));
+  const ordered = order.filter((o) => members.has(o));
   return ordered;
 }
 
@@ -672,11 +737,12 @@ export function regionsFromAnchors(
   edges: CommitEdge[],
   refsByOid: Map<string, RefLabel[]>,
 ): Run[] {
+  const adj = buildAdjacency(nodes, edges, refsByOid);
   const groups: Run[] = [];
   const claimed = new Set<string>();
   for (const anchor of anchors) {
     if (claimed.has(anchor)) continue;
-    const members = regionAround(anchor, nodes, edges, refsByOid);
+    const members = regionAround(anchor, nodes, edges, refsByOid, adj);
     if (!members) continue;
     // Skip if this region overlaps an already-claimed region (dedupe).
     if (members.some((o) => claimed.has(o))) continue;
@@ -749,30 +815,27 @@ export function foldableNodeIds(
   const eligible = new Set<string>();
   const anchorFor = new Map<string, string>();
 
-  const inGraph = new Set(nodes.map((n) => n.oid));
-
-  // In-graph child-of / parent-of maps (edges run parent(source)→child(target)),
-  // same style as regionAround. A region is linear so its head/tail each have a
-  // single in-graph child/parent — the adjacency neighbors we look up below.
-  const childOf = new Map<string, string>(); // parent.source -> single in-graph child
-  const parentOf = new Map<string, string>(); // child.target -> single in-graph parent
-  for (const e of edges) {
-    if (!inGraph.has(e.source) || !inGraph.has(e.target)) continue;
-    childOf.set(e.source, e.target);
-    parentOf.set(e.target, e.source);
-  }
+  const adj = buildAdjacency(nodes, edges, refsByOid);
+  const { inGraph, childOf, parentOf, headOids } = adj;
 
   // A commit carries the checked-out HEAD when its ref list has a HEAD entry.
-  const isHead = (x: string): boolean =>
-    (refsByOid.get(x) ?? []).some((r) => r.is_head || r.kind === "head");
+  const isHead = (x: string): boolean => headOids.has(x);
 
   // Discover the distinct regions once (keyed by canonical anchor) so member
   // mappings can be applied for ALL regions BEFORE any adjacency mapping — this
   // guarantees member priority (Req 27.1) regardless of node iteration order.
+  //
+  // `regionAround` returns the SAME ordered member list for every member of a
+  // region, so once a node is claimed by a discovered region we skip it — this
+  // walks each region ONCE instead of once per member, keeping the scan O(N + E)
+  // rather than O(N · region-length).
   const regionByAnchor = new Map<string, string[]>();
+  const claimed = new Set<string>();
   for (const n of nodes) {
-    const members = regionAround(n.oid, nodes, edges, refsByOid);
+    if (claimed.has(n.oid)) continue;
+    const members = regionAround(n.oid, nodes, edges, refsByOid, adj);
     if (!members) continue; // lone commit / boundary / HEAD → no region
+    for (const m of members) claimed.add(m);
     regionByAnchor.set(members[0], members); // idempotent: same anchor => same list
   }
 
@@ -825,8 +888,9 @@ export function autoCollapseAnchors(
   refsByOid: Map<string, RefLabel[]>,
   minLen: number,
 ): string[] {
-  const inGraph = new Set(nodes.map((n) => n.oid));
   const nodeByOid = new Map(nodes.map((n) => [n.oid, n]));
+  const adj = buildAdjacency(nodes, edges, refsByOid);
+  const { inGraph } = adj;
 
   // HEAD-trunk oid set: first-parent walk from headOid via parents[0].
   const trunk = new Set<string>();
@@ -845,7 +909,7 @@ export function autoCollapseAnchors(
   for (const n of nodes) {
     const oid = n.oid;
     if (covered.has(oid)) continue;
-    const members = regionAround(oid, nodes, edges, refsByOid);
+    const members = regionAround(oid, nodes, edges, refsByOid, adj);
     if (!members) continue;
     for (const m of members) covered.add(m);
     if (members.length < minLen) continue;

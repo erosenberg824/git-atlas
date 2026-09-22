@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { GitBranch, Search, FolderOpen, Loader2, AlertCircle, GitCommit } from "lucide-react";
-import { api, type GraphResponse, type TreeResponse, type StatusSummary } from "./api/client";
+import { api, GRAPH_NODE_LIMIT, type GraphResponse, type TreeResponse, type StatusSummary } from "./api/client";
 import { isTauri, pickDirectory, onFolderDrop } from "./lib/tauri";
 import { useLiveUpdates } from "./lib/useLiveUpdates";
 import CommitGraph, {
@@ -88,22 +88,32 @@ export default function App() {
   const loadGraph = useCallback(async () => {
     setGraphLoading(true);
     setGraphError(null);
+    // Fire the time-bounds walk IN PARALLEL with the graph fetch rather than
+    // after it. The scrubber's full range doesn't gate the graph render, and on
+    // a cold-cache open both are independent full-history libgit2 walks — kicking
+    // timeBounds off here lets them overlap instead of running back-to-back.
+    // (Actual overlap depends on the server running the two spawn_blocking walks
+    // concurrently; the client no longer serializes them regardless. The deeper
+    // fix — one shared walk — belongs to the windowed-load work.) Non-fatal:
+    // a timebounds failure just leaves the scrubber without a range.
+    api.graph
+      .timeBounds()
+      .then((b) => {
+        if (b.newest_ts != null && b.oldest_ts != null && b.newest_ts > b.oldest_ts) {
+          setTimeBounds({ newest: b.newest_ts, oldest: b.oldest_ts });
+        } else {
+          setTimeBounds(null);
+        }
+      })
+      .catch(() => setTimeBounds(null));
     try {
-      const g = await api.graph.get({ limit: 500 });
+      const g = await api.graph.get({ limit: GRAPH_NODE_LIMIT });
       setGraph(g);
       if (g.nodes.length > 0) {
         setSelectedOid(g.nodes[0].oid);
       }
       // Working/staged/stash status drives the pseudo-nodes. Non-fatal if it fails.
       api.status.get().then(setStatus).catch(() => setStatus(null));
-      // Repo time bounds drive the scrubber's full range. Non-fatal.
-      api.graph.timeBounds().then((b) => {
-        if (b.newest_ts != null && b.oldest_ts != null && b.newest_ts > b.oldest_ts) {
-          setTimeBounds({ newest: b.newest_ts, oldest: b.oldest_ts });
-        } else {
-          setTimeBounds(null);
-        }
-      }).catch(() => setTimeBounds(null));
     } catch (e) {
       setGraphError(e instanceof Error ? e.message : "Failed to load graph");
     } finally {
@@ -116,7 +126,7 @@ export default function App() {
   // in place when the repo changes on disk.
   const refreshGraph = useCallback(async () => {
     try {
-      const g = await api.graph.get({ limit: 500 });
+      const g = await api.graph.get({ limit: GRAPH_NODE_LIMIT });
       setGraph(g);
       // Keep the current selection if it still exists; otherwise fall back to
       // the newest commit (only when nothing is selected).
@@ -163,7 +173,7 @@ export default function App() {
     if (branchDebounce.current) clearTimeout(branchDebounce.current);
     branchDebounce.current = setTimeout(() => {
       api.graph
-        .get({ limit: 500, refs: shown.length > 0 ? shown : undefined })
+        .get({ limit: GRAPH_NODE_LIMIT, refs: shown.length > 0 ? shown : undefined })
         .then((g) => {
           setGraph(g);
           setSelectedOid((prev) =>
@@ -235,7 +245,7 @@ export default function App() {
     if (windowDebounce.current) clearTimeout(windowDebounce.current);
     windowDebounce.current = setTimeout(() => {
       api.graph
-        .get({ limit: 500, since: timeWindow.since, until: timeWindow.until })
+        .get({ limit: GRAPH_NODE_LIMIT, since: timeWindow.since, until: timeWindow.until })
         .then((g) => {
           setGraph(g);
           setSelectedOid((prev) =>
@@ -433,7 +443,7 @@ export default function App() {
                 newest={timeWindow?.until ?? timeBounds.newest}
                 oldest={timeWindow?.since ?? timeBounds.oldest}
                 shownCount={graph.nodes.length}
-                totalCount={graph.nodes.length + (graph.before_count ?? 0) + (graph.after_count ?? 0)}
+                totalCount={graph.nodes.length + (graph.before_count ?? 0) + (graph.after_count ?? 0) + (graph.hidden_count ?? 0)}
                 beforeCount={graph.before_count ?? 0}
                 afterCount={graph.after_count ?? 0}
                 onHome={() => {

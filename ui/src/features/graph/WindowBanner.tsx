@@ -3,7 +3,9 @@ import { Clock, Home } from "lucide-react";
 /**
  * Status bar above the graph. Always visible: shows the date range of what's
  * displayed, how many commits are shown (and the total across visible branches),
- * and — when a time window hides commits — how many are after/before it.
+ * and — when a time window hides commits — how many are newer (↑, above the
+ * window) or older (↓, below it). The graph is newest-at-top, so the arrows
+ * match the on-screen direction of the hidden commits.
  *
  * The Home button resets the time window and jumps to HEAD (main/master).
  *
@@ -62,7 +64,14 @@ export default function WindowBanner({
       </span>
       {(afterCount > 0 || beforeCount > 0) && (
         <span className="text-[#6e7681] whitespace-nowrap">
-          · {afterCount} after · {beforeCount} before
+          {/* Counts of commits OUTSIDE the current time window. Labeled with
+              spatial direction (↑ newer / ↓ older) rather than the temporal
+              words "after"/"before": the graph is newest-at-top, so newer
+              commits sit ABOVE the window and older ones BELOW. `afterCount` is
+              newer-than-`until`, `beforeCount` is older-than-`since` (see the
+              server tally in git/graph.rs) — the wiring is unchanged, only the
+              wording, to match the layout and remove the before/after ambiguity. */}
+          · ↑ {afterCount} newer · ↓ {beforeCount} older
         </span>
       )}
       {/* Home: reset time + jump to HEAD. Custom tooltip (native title is slow/

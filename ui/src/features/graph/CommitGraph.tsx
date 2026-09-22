@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -305,7 +305,40 @@ export default function CommitGraph({
   const [regionSeed, setRegionSeed] = useState<Set<string>>(new Set());
   const [mergeSeed, setMergeSeed] = useState<Set<string>>(new Set());
 
+  // A stable signature of the current window's commit set. Live updates re-fetch
+  // the graph and hand us a NEW object even when nothing relevant changed (e.g. a
+  // staging-only .git write); comparing OIDs lets us tell a genuine window change
+  // from a no-op refetch so we don't blow away the user's manual fold/expand.
+  const nodeSig = useMemo(
+    () => graph.nodes.map((n) => n.oid).join(","),
+    [graph.nodes],
+  );
+  const prevNodeSig = useRef<string | null>(null);
+
+  // A stable signature of EVERYTHING the default seeds are derived from — the
+  // commit set (`nodeSig`), the edge set, and the ref set (branch/tag/HEAD oids
+  // + which is HEAD). The seeds (`autoCollapseAnchors`, `leafTipVisibility`) are
+  // pure functions of exactly these, so when the signature is unchanged a
+  // live-update refetch that hands us fresh-but-identical objects would
+  // recompute the SAME seeds — gating on this signature skips that wasted work
+  // (the collapse passes are the graph's hot path). A genuine change (window
+  // slide, branch move, new commit) changes the signature and re-seeds.
+  const seedSig = useMemo(() => {
+    const edgeSig = graph.edges.map((e) => `${e.source}>${e.target}`).join(",");
+    const refSig = graph.refs
+      .map((r) => `${r.oid}:${r.kind}:${r.is_head ? 1 : 0}`)
+      .join(",");
+    return `${nodeSig}|${edgeSig}|${refSig}`;
+  }, [nodeSig, graph.edges, graph.refs]);
+  const prevSeedSig = useRef<string | null>(null);
+
   useEffect(() => {
+    // Gate: skip the recompute entirely when nothing the seeds depend on has
+    // changed. Without this, every no-op live-update refetch re-runs the O(N+E)
+    // collapse seed passes over the full node set for an identical result.
+    if (prevSeedSig.current === seedSig) return;
+    prevSeedSig.current = seedSig;
+
     const region = autoCollapseAnchors(
       graph.nodes,
       graph.edges,
@@ -316,9 +349,18 @@ export default function CommitGraph({
     const merge = leafTipVisibility(graph.nodes, graph.edges, graph.refs);
     setRegionSeed(new Set(region));
     setMergeSeed(merge);
-    setUserCollapsed(new Set());
-    setUserExpanded(new Set());
-  }, [graph.nodes, graph.edges, graph.refs, headOid, refsByOid]);
+    // Only discard the user's manual overrides when the actual commit set
+    // changed (opened a different repo, moved the time window, changed branch
+    // visibility). A live-update refetch that yields the same commits preserves
+    // whatever the user manually folded/expanded. This is a SEPARATE, stricter
+    // condition than the seed gate above: a branch move re-seeds (seedSig
+    // changed) but keeps the user's folds (nodeSig unchanged).
+    if (prevNodeSig.current !== nodeSig) {
+      setUserCollapsed(new Set());
+      setUserExpanded(new Set());
+      prevNodeSig.current = nodeSig;
+    }
+  }, [graph.nodes, graph.edges, graph.refs, headOid, refsByOid, nodeSig, seedSig]);
 
   // Effective folded ids: compose the default seeds (region always, merge only
   // in "active" mode) with the user's manual overrides. A view-mode flip only
@@ -850,6 +892,11 @@ export default function CommitGraph({
         maxZoom={1.5}
         attributionPosition="bottom-right"
         colorMode="dark"
+        // Only mount nodes/edges within the viewport. With a full window of up to
+        // ~500 commit cards (+ edges + MiniMap), this keeps the DOM/paint cost
+        // proportional to what's on screen rather than the whole window — the
+        // main client-side win for responsiveness on large graphs.
+        onlyRenderVisibleElements
       >
         <Background
           variant={BackgroundVariant.Dots}

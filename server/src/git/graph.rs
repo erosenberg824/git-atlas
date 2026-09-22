@@ -42,8 +42,24 @@ pub enum RefKind {
     Head,
 }
 
+/// Result of a graph walk: the windowed nodes/edges plus the ref labels and the
+/// counts of visible commits that were NOT returned as nodes, so the UI can show
+/// an accurate total without holding the whole history.
+pub struct GraphData {
+    pub nodes: Vec<CommitNode>,
+    pub edges: Vec<CommitEdge>,
+    pub refs: Vec<RefLabel>,
+    /// Visible-branch commits OLDER than the window's `since` (hidden below).
+    pub before_count: usize,
+    /// Visible-branch commits NEWER than the window's `until` (hidden above).
+    pub after_count: usize,
+    /// In-window commits dropped because the node `limit` was reached. Non-zero
+    /// even with no time filter — this is what makes the "N commits" total
+    /// correct on a full-history view that exceeds `limit`.
+    pub hidden_count: usize,
+}
+
 /// Build a commit graph starting from `start` (ref or OID), limited to `limit` commits.
-/// Returns (nodes, edges, refs).
 pub fn build_graph(
     repo: &Repository,
     start: Option<&str>,
@@ -51,7 +67,7 @@ pub fn build_graph(
     since: Option<i64>,
     until: Option<i64>,
     seed_refs: Option<&[String]>,
-) -> Result<(Vec<CommitNode>, Vec<CommitEdge>, Vec<RefLabel>, usize, usize), AppError> {
+) -> Result<GraphData, AppError> {
     let mut revwalk = repo.revwalk().map_err(AppError::Git)?;
     revwalk
         .set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
@@ -83,7 +99,14 @@ pub fn build_graph(
         }
         if pushed == 0 {
             let refs = collect_refs(repo)?;
-            return Ok((Vec::new(), Vec::new(), refs, 0, 0));
+            return Ok(GraphData {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                refs,
+                before_count: 0,
+                after_count: 0,
+                hidden_count: 0,
+            });
         }
     } else {
         // A repository with no commits has an unborn HEAD (e.g. refs/heads/main
@@ -91,7 +114,14 @@ pub fn build_graph(
         // so treat this as a valid-but-empty graph rather than an error.
         if repo.is_empty().unwrap_or(false) || repo.head().is_err() {
             let refs = collect_refs(repo)?;
-            return Ok((Vec::new(), Vec::new(), refs, 0, 0));
+            return Ok(GraphData {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                refs,
+                before_count: 0,
+                after_count: 0,
+                hidden_count: 0,
+            });
         }
         // Seed the walk from ALL refs (local + remote branches, tags, HEAD) so
         // the graph includes commits reachable from any ref — not just those on
@@ -104,16 +134,34 @@ pub fn build_graph(
     let mut edges = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    // Counts of visible (seeded) commits that fall OUTSIDE the window, so the UI
-    // can show "X before · Y after". before = older than `since`, after = newer
-    // than `until`. Tallied over the full walk (independent of the node limit).
+    // Counts of visible (seeded) commits NOT returned as nodes, so the UI can
+    // show an accurate total without holding the whole history:
+    //   before = older than `since`, after = newer than `until`,
+    //   hidden  = in-window but past the node `limit`.
+    // Tallied over the full walk (independent of the node limit).
     let mut before_count = 0usize;
     let mut after_count = 0usize;
+    let mut hidden_count = 0usize;
     let mut node_budget_left = limit > 0;
+
+    // Whether any time window is active. When there is none, a commit past the
+    // node budget needs no timestamp classification — it is unconditionally an
+    // in-window "hidden" commit — so we can count it WITHOUT the expensive
+    // `find_commit` object decode. This is the hot path for a full-history view
+    // of a large repo (walk stays O(n) in revwalk steps, but avoids n object
+    // inflations once the window is full).
+    let windowed = since.is_some() || until.is_some();
 
     for oid_result in revwalk {
         let oid = oid_result.map_err(AppError::Git)?;
         if !seen.insert(oid) {
+            continue;
+        }
+
+        // Fast path: budget exhausted and no time filter — every remaining
+        // commit is a hidden in-window commit. Count it and skip the decode.
+        if !node_budget_left && !windowed {
+            hidden_count += 1;
             continue;
         }
 
@@ -134,9 +182,10 @@ pub fn build_graph(
             }
         }
 
-        // In-window commit: build a node until the limit is reached. (We keep
-        // walking after the limit only to finish tallying before/after counts.)
+        // In-window commit: build a node until the limit is reached. Past the
+        // limit we keep walking to finish tallying before/after/hidden counts.
         if !node_budget_left {
+            hidden_count += 1; // in-window but beyond the node budget
             continue;
         }
 
@@ -177,7 +226,14 @@ pub fn build_graph(
     edges.retain(|e| node_ids.contains(e.source.as_str()) && node_ids.contains(e.target.as_str()));
 
     let refs = collect_refs(repo)?;
-    Ok((nodes, edges, refs, before_count, after_count))
+    Ok(GraphData {
+        nodes,
+        edges,
+        refs,
+        before_count,
+        after_count,
+        hidden_count,
+    })
 }
 
 /// Repository time bounds: newest & oldest commit timestamps (unix seconds)
@@ -320,11 +376,10 @@ mod tests {
     #[test]
     fn empty_repo_yields_empty_graph() {
         let (repo, dir) = temp_repo();
-        let (nodes, edges, _refs, before, after) =
-            build_graph(&repo, None, 500, None, None, None).unwrap();
-        assert!(nodes.is_empty());
-        assert!(edges.is_empty());
-        assert_eq!((before, after), (0, 0));
+        let g = build_graph(&repo, None, 500, None, None, None).unwrap();
+        assert!(g.nodes.is_empty());
+        assert!(g.edges.is_empty());
+        assert_eq!((g.before_count, g.after_count, g.hidden_count), (0, 0, 0));
         cleanup(dir);
     }
 
@@ -334,10 +389,10 @@ mod tests {
         commit(&repo, "c1", 1000);
         commit(&repo, "c2", 2000);
         commit(&repo, "c3", 3000);
-        let (nodes, edges, _refs, _b, _a) =
-            build_graph(&repo, None, 500, None, None, None).unwrap();
-        assert_eq!(nodes.len(), 3);
-        assert_eq!(edges.len(), 2); // c1->c2, c2->c3
+        let g = build_graph(&repo, None, 500, None, None, None).unwrap();
+        assert_eq!(g.nodes.len(), 3);
+        assert_eq!(g.edges.len(), 2); // c1->c2, c2->c3
+        assert_eq!(g.hidden_count, 0);
         cleanup(dir);
     }
 
@@ -356,12 +411,11 @@ mod tests {
             .or_else(|_| repo.set_head("refs/heads/main"))
             .unwrap();
 
-        let (nodes, _e, refs, _b, _a) =
-            build_graph(&repo, None, 500, None, None, None).unwrap();
+        let g = build_graph(&repo, None, 500, None, None, None).unwrap();
         // Seeding from ALL refs should include the feature-only commit.
-        let summaries: Vec<&str> = nodes.iter().map(|n| n.summary.as_str()).collect();
+        let summaries: Vec<&str> = g.nodes.iter().map(|n| n.summary.as_str()).collect();
         assert!(summaries.contains(&"feat-only"), "expected feat-only, got {summaries:?}");
-        assert!(refs.iter().any(|r| r.name == "feature"));
+        assert!(g.refs.iter().any(|r| r.name == "feature"));
         cleanup(dir);
     }
 
@@ -376,12 +430,11 @@ mod tests {
         let sig = Signature::new("t", "t@t.co", &Time::new(2000, 0)).unwrap();
         repo.tag("annot", &repo.find_object(c2, None).unwrap(), &sig, "annotated", false).unwrap();
 
-        let (nodes, _e, refs, _b, _a) =
-            build_graph(&repo, None, 500, None, None, None).unwrap();
+        let g = build_graph(&repo, None, 500, None, None, None).unwrap();
         let node_ids: std::collections::HashSet<&str> =
-            nodes.iter().map(|n| n.oid.as_str()).collect();
+            g.nodes.iter().map(|n| n.oid.as_str()).collect();
         for name in ["light", "annot"] {
-            let r = refs.iter().find(|r| r.name == name).expect("tag ref present");
+            let r = g.refs.iter().find(|r| r.name == name).expect("tag ref present");
             // Both must peel to a real commit node (annotated tag must NOT point
             // at the tag object).
             assert!(node_ids.contains(r.oid.as_str()), "{name} should attach to a commit node");
@@ -396,13 +449,12 @@ mod tests {
             commit(&repo, &format!("c{i}"), i as i64 * 1000);
         }
         // window [2500, 4500] -> includes c3(3000), c4(4000)
-        let (nodes, _e, _r, before, after) =
-            build_graph(&repo, None, 500, Some(2500), Some(4500), None).unwrap();
-        let mut summaries: Vec<&str> = nodes.iter().map(|n| n.summary.as_str()).collect();
+        let g = build_graph(&repo, None, 500, Some(2500), Some(4500), None).unwrap();
+        let mut summaries: Vec<&str> = g.nodes.iter().map(|n| n.summary.as_str()).collect();
         summaries.sort();
         assert_eq!(summaries, vec!["c3", "c4"]);
-        assert_eq!(before, 2, "c1,c2 older than window"); // older
-        assert_eq!(after, 2, "c5,c6 newer than window"); // newer
+        assert_eq!(g.before_count, 2, "c1,c2 older than window"); // older
+        assert_eq!(g.after_count, 2, "c5,c6 newer than window"); // newer
         cleanup(dir);
     }
 
@@ -424,9 +476,8 @@ mod tests {
 
         // Scope to the main branch only -> feat-only excluded.
         let seed = vec![main_name.to_string()];
-        let (nodes, _e, _r, _b, _a) =
-            build_graph(&repo, None, 500, None, None, Some(&seed)).unwrap();
-        let summaries: Vec<&str> = nodes.iter().map(|n| n.summary.as_str()).collect();
+        let g = build_graph(&repo, None, 500, None, None, Some(&seed)).unwrap();
+        let summaries: Vec<&str> = g.nodes.iter().map(|n| n.summary.as_str()).collect();
         assert!(summaries.contains(&"base"));
         assert!(!summaries.contains(&"feat-only"), "feature commit should be scoped out");
         cleanup(dir);
@@ -440,13 +491,51 @@ mod tests {
         }
         // limit=2 -> only 2 nodes; the older parent of the 2nd is outside the
         // set, so its edge must be dropped (no edge referencing a missing node).
-        let (nodes, edges, _r, _b, _a) =
-            build_graph(&repo, None, 2, None, None, None).unwrap();
+        let g = build_graph(&repo, None, 2, None, None, None).unwrap();
+        let (nodes, edges) = (g.nodes, g.edges);
         assert_eq!(nodes.len(), 2);
         let ids: std::collections::HashSet<&str> = nodes.iter().map(|n| n.oid.as_str()).collect();
         for e in &edges {
             assert!(ids.contains(e.source.as_str()) && ids.contains(e.target.as_str()));
         }
+        cleanup(dir);
+    }
+
+    #[test]
+    fn hidden_count_reports_commits_dropped_by_limit() {
+        let (repo, dir) = temp_repo();
+        for i in 1..=10 {
+            commit(&repo, &format!("c{i}"), i as i64 * 1000);
+        }
+        // No time window, limit=4: 4 nodes returned, 6 in-window commits hidden
+        // by the limit. This is the full-history case the old code reported as
+        // "500" (hidden_count was never tallied). before/after stay 0 since
+        // there's no window.
+        let g = build_graph(&repo, None, 4, None, None, None).unwrap();
+        assert_eq!(g.nodes.len(), 4);
+        assert_eq!(g.hidden_count, 6, "6 commits beyond the limit");
+        assert_eq!((g.before_count, g.after_count), (0, 0));
+        // The reconstructed total matches the real commit count.
+        assert_eq!(
+            g.nodes.len() + g.before_count + g.after_count + g.hidden_count,
+            10
+        );
+        cleanup(dir);
+    }
+
+    #[test]
+    fn hidden_count_alongside_time_window() {
+        let (repo, dir) = temp_repo();
+        for i in 1..=10 {
+            commit(&repo, &format!("c{i}"), i as i64 * 1000);
+        }
+        // window [2500, 8500] includes c3..c8 (6 commits); limit=2 shows 2 and
+        // hides 4 in-window. c1,c2 are before; c9,c10 are after.
+        let g = build_graph(&repo, None, 2, Some(2500), Some(8500), None).unwrap();
+        assert_eq!(g.nodes.len(), 2);
+        assert_eq!(g.before_count, 2, "c1,c2");
+        assert_eq!(g.after_count, 2, "c9,c10");
+        assert_eq!(g.hidden_count, 4, "in-window commits past the limit");
         cleanup(dir);
     }
 }

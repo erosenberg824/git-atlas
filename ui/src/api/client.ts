@@ -10,6 +10,22 @@
 
 let baseUrl: string | null = null;
 
+/**
+ * Default max commits fetched into a single graph view. The server caps at this
+ * when no `limit` is passed; the client passes it explicitly at every graph
+ * fetch so there's ONE knob (not four drifting call sites + a separate server
+ * default).
+ *
+ * This is a SAFETY CAP, not a target: the graph is meant to stay readable via
+ * aggressive default collapse (a large linear history folds to far fewer
+ * rendered nodes), and the time scrubber / branch scoping are how you reach
+ * commits beyond the cap. Raising it mainly loosens the ceiling for the "show
+ * me everything" case; the collapse seed passes are O(N+E) so the cost of a
+ * larger fetch is bounded. When a window/scope has more commits than this, the
+ * overflow is reported as `hidden_count` and surfaced in the window banner.
+ */
+export const GRAPH_NODE_LIMIT = 500;
+
 /** Detect the Tauri runtime without importing the API (which throws in a browser). */
 function inTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -114,6 +130,10 @@ export interface GraphResponse {
   before_count: number;
   /** Visible-branch commits newer than the window's end (hidden above). */
   after_count: number;
+  /** In-window commits dropped because the node limit was reached. Non-zero
+   *  even with no time filter — makes the total correct on full-history views
+   *  that exceed the limit. */
+  hidden_count: number;
 }
 
 export interface TimeBounds {
