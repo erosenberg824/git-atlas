@@ -247,6 +247,37 @@ export interface PrSummary {
   tip_oid: string | null;
 }
 
+/** A ref (branch/tag/remote) that contains a given commit. */
+export interface ContainingRef {
+  name: string;
+  kind: "branch" | "remotebranch" | "tag" | "head";
+  /** True when this ref's tip IS the queried commit (vs. merely containing it). */
+  is_tip: boolean;
+  /** True when this is the repository's default (HEAD) branch. */
+  is_default_branch: boolean;
+  /** Tip commit time (unix secs) — used to pick the earliest containing tag. */
+  tip_ts: number | null;
+}
+
+export interface ContainmentSummary {
+  /** Earliest tag (by tip time) containing the commit — "first released in". */
+  earliest_tag: string | null;
+  /** Default branch name if it contains the commit, else null. */
+  on_default_branch: string | null;
+  branch_count: number;
+  remote_count: number;
+  tag_count: number;
+}
+
+export interface ContainmentResponse {
+  oid: string;
+  /** Refs pointing exactly at this commit (the "At this commit" section). */
+  tips: ContainingRef[];
+  /** All refs containing this commit in ancestry (tips included). */
+  contained_in: ContainingRef[];
+  summary: ContainmentSummary;
+}
+
 // ─── API calls ───────────────────────────────────────────────────────────────
 
 export const api = {
@@ -269,6 +300,7 @@ export const api = {
   },
   commits: {
     get: (oid: string) => get<CommitDetail>(`/commits/${oid}`),
+    containment: (oid: string) => get<ContainmentResponse>(`/commits/${oid}/containment`),
   },
   diff: {
     forCommit: (oid: string) => get<DiffResponse>(`/diff/${oid}`),

@@ -2,6 +2,7 @@ import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { GitMerge, ChevronsDownUp } from "lucide-react";
 import type { CommitNode, RefLabel } from "../../api/client";
+import { refBadgeClass } from "./refBadge";
 
 interface CommitNodeData {
   commit: CommitNode;
@@ -105,16 +106,7 @@ function CommitNodeComponent({ data }: NodeProps) {
             <span
               key={ref.name}
               title={ref.name}
-              className={[
-                "px-1.5 py-0 rounded text-[10px] font-mono leading-4 max-w-full truncate inline-block align-bottom",
-                ref.is_head
-                  ? "bg-green-900/60 text-green-300 border border-green-700/50"
-                  : ref.kind === "tag"
-                  ? "bg-yellow-900/60 text-yellow-300 border border-yellow-700/50"
-                  : ref.kind === "remotebranch"
-                  ? "bg-orange-900/40 text-orange-300 border border-orange-700/50"
-                  : "bg-blue-900/60 text-blue-300 border border-blue-700/50",
-              ].join(" ")}
+              className={refBadgeClass(ref, { size: "node" })}
             >
               {ref.is_head ? "● " : ""}
               {ref.name}

@@ -1,4 +1,5 @@
 pub mod graph;
+pub mod containment;
 pub mod commits;
 pub mod diff;
 pub mod tree;

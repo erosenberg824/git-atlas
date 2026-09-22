@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { GitCommit, Loader2 } from "lucide-react";
 import { api, type CommitDetail, type DiffResponse } from "../../api/client";
+import ContainmentSection, {
+  TipBadges,
+  useContainment,
+} from "./ContainmentSection";
 
 interface CommitPanelProps {
   /** The commit OID whose metadata + changed files to show. */
@@ -19,6 +23,10 @@ export default function CommitPanel({ oid, onSelectFile }: CommitPanelProps) {
   const [diff, setDiff] = useState<DiffResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Containment (tips + contained-in refs), fetched once and shared between the
+  // header tip badges and the "Contained in" section below.
+  const containment = useContainment(oid);
 
   useEffect(() => {
     setLoading(true);
@@ -55,13 +63,9 @@ export default function CommitPanel({ oid, onSelectFile }: CommitPanelProps) {
     <div className="flex flex-col h-full overflow-auto">
       {/* Commit header */}
       <div className="p-4 border-b border-[#30363d] shrink-0">
-        <div className="flex items-start gap-2 mb-2">
-          <GitCommit size={16} className="text-[#8b949e] mt-0.5 shrink-0" />
-          <p className="text-sm text-[#e6edf3] leading-snug whitespace-pre-wrap">
-            {commit.message}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[#8b949e] ml-6">
+        {/* Metadata first: author/date/hash, then tip refs (identity info),
+            then the log message below. */}
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[#8b949e]">
           <span>
             <span className="text-[#e6edf3]">{commit.author.name}</span>
             {" <"}{commit.author.email}{">"}
@@ -70,11 +74,25 @@ export default function CommitPanel({ oid, onSelectFile }: CommitPanelProps) {
           <span className="font-mono">{commit.short_oid}</span>
         </div>
         {commit.parents.length > 1 && (
-          <div className="ml-6 mt-1 text-xs text-yellow-400">
+          <div className="mt-1 text-xs text-yellow-400">
             Merge commit ({commit.parents.length} parents)
           </div>
         )}
+        {/* Tip refs (branches/tags pointing exactly here) — part of the
+            commit's identity, so shown near the top with the metadata. */}
+        <TipBadges data={containment} />
+        {/* Log message last. */}
+        <div className="flex items-start gap-2 mt-3">
+          <GitCommit size={16} className="text-[#8b949e] mt-0.5 shrink-0" />
+          <p className="text-sm text-[#e6edf3] leading-snug whitespace-pre-wrap">
+            {commit.message}
+          </p>
+        </div>
       </div>
+
+      {/* "Contained in" branches/tags. Fetched independently (via useContainment)
+          so it doesn't block the metadata/files. */}
+      <ContainmentSection data={containment} />
 
       {/* Changed files list */}
       <div className="border-b border-[#30363d] shrink-0">

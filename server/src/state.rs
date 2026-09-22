@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::git::containment::ContainmentMap;
 use crate::search::IndexCache;
 use crate::watcher::{self, RepoChanged, WatchHandle};
 use anyhow::Result;
@@ -29,6 +30,21 @@ impl GraphCache {
     }
 }
 
+/// Cache of the whole-repo commit→containing-refs map. Unlike `GraphCache`,
+/// this is NOT cleared on every repo change: containment only changes when the
+/// *ref set* changes (a ref added, deleted, or moved). Most `.git` events
+/// (index writes, working-tree edits, new unreferenced objects) leave
+/// containment untouched, and recomputing it is expensive (a walk per ref), so
+/// we key the cache by a fingerprint of the ref set and rebuild only on a
+/// mismatch. A stale entry is never *wrong* because the fingerprint guards it.
+#[derive(Default)]
+pub struct ContainmentCache {
+    /// The ref-set fingerprint the cached `map` was computed for.
+    pub fingerprint: Option<u64>,
+    /// The memoized map, shared cheaply via `Arc` with concurrent readers.
+    pub map: Option<Arc<ContainmentMap>>,
+}
+
 /// Shared application state passed to all route handlers via Axum extractors.
 #[derive(Clone)]
 pub struct AppState {
@@ -45,6 +61,9 @@ pub struct Inner {
     /// Memoized graph + time-bounds results, invalidated on repo change so a
     /// large repo isn't re-walked on every request and every live-update event.
     pub graph_cache: RwLock<GraphCache>,
+    /// Memoized commit→containing-refs map, keyed by ref-set fingerprint so it
+    /// rebuilds only when refs actually change (not on every `.git` event).
+    pub containment_cache: RwLock<ContainmentCache>,
     /// Broadcast channel for live "repo changed" events (fed by the watcher,
     /// consumed by /events WebSocket clients).
     pub events: broadcast::Sender<RepoChanged>,
@@ -62,6 +81,7 @@ impl AppState {
                 repo_path,
                 index_cache: crate::search::new_index_cache(),
                 graph_cache: RwLock::new(GraphCache::default()),
+                containment_cache: RwLock::new(ContainmentCache::default()),
                 events,
                 watch: Mutex::new(None),
             }),
@@ -113,6 +133,26 @@ impl AppState {
         self.inner.graph_cache.write().await.time_bounds = Some(value);
     }
 
+    /// Return the cached containment map iff it was computed for `fingerprint`.
+    /// A `None` means the caller must (re)compute and then call
+    /// [`AppState::cache_containment`].
+    pub async fn cached_containment(&self, fingerprint: u64) -> Option<Arc<ContainmentMap>> {
+        let guard = self.inner.containment_cache.read().await;
+        if guard.fingerprint == Some(fingerprint) {
+            guard.map.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Store a freshly computed containment `map` under its ref-set
+    /// `fingerprint`, replacing any prior entry.
+    pub async fn cache_containment(&self, fingerprint: u64, map: Arc<ContainmentMap>) {
+        let mut guard = self.inner.containment_cache.write().await;
+        guard.fingerprint = Some(fingerprint);
+        guard.map = Some(map);
+    }
+
     /// Subscribe to live repo-change events.
     pub fn subscribe(&self) -> broadcast::Receiver<RepoChanged> {
         self.inner.events.subscribe()
@@ -138,6 +178,13 @@ impl AppState {
         // A different repo invalidates any cached graph/time-bounds immediately
         // (don't wait for a filesystem event that may never come).
         self.inner.graph_cache.write().await.clear();
+        {
+            // Drop the containment map too — a new repo's fingerprint would
+            // differ anyway, but don't hold a large stale map for a closed repo.
+            let mut c = self.inner.containment_cache.write().await;
+            c.fingerprint = None;
+            c.map = None;
+        }
         self.start_watching(&path).await;
     }
 

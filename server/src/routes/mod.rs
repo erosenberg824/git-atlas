@@ -9,6 +9,7 @@ use crate::state::AppState;
 pub mod repo;
 pub mod graph;
 pub mod commits;
+pub mod containment;
 pub mod diff;
 pub mod tree;
 pub mod search;
@@ -29,6 +30,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/timebounds", get(graph::get_time_bounds))
         // Commits
         .route("/commits/:oid", get(commits::get_commit))
+        .route("/commits/:oid/containment", get(containment::get_containment))
         // Diffs — static segments (working/staged/stash) are registered before
         // the /diff/:oid catch-all so they aren't parsed as commit OIDs.
         .route("/diff/working", get(diff::get_working_diff))

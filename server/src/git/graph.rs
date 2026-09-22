@@ -33,7 +33,7 @@ pub struct RefLabel {
     pub tip_ts: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RefKind {
     Branch,
