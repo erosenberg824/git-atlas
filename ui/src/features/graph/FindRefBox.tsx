@@ -16,9 +16,16 @@ export default function FindRefBox({
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
 
-  // Branch + tag refs, de-duplicated by name.
+  // Branch + tag + HEAD refs, de-duplicated by name.
   const named = useMemo(
-    () => refs.filter((r) => r.kind === "branch" || r.kind === "remotebranch" || r.kind === "tag"),
+    () =>
+      refs.filter(
+        (r) =>
+          r.kind === "branch" ||
+          r.kind === "remotebranch" ||
+          r.kind === "tag" ||
+          r.kind === "head",
+      ),
     [refs],
   );
   const matches = useMemo(() => {
@@ -62,10 +69,14 @@ export default function FindRefBox({
             >
               <span
                 className={
-                  r.kind === "tag" ? "text-yellow-300" : "text-blue-300"
+                  r.kind === "tag"
+                    ? "text-yellow-300"
+                    : r.kind === "head"
+                      ? "text-green-300"
+                      : "text-blue-300"
                 }
               >
-                {r.kind === "tag" ? "⌂" : "⑂"}
+                {r.kind === "tag" ? "⌂" : r.kind === "head" ? "◆" : "⑂"}
               </span>
               <span className="truncate">{r.name}</span>
             </button>
