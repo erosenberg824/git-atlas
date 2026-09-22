@@ -98,6 +98,7 @@ git-atlas/
     │       ├── commit/CommitPanel.tsx        # Commit metadata + changed files list
     │       ├── diff/DiffViewer.tsx           # Unified diff: hunks, line numbers, +/- highlighting
     │       ├── tree/FileBrowser.tsx          # Recursive file tree built from flat path list
+    │       ├── tree/fileTree.ts              # Pure tree-building/sort/format helpers (unit-tested)
     │       ├── tree/FileViewer.tsx           # File contents (blob) viewer for the Files tab
     │       ├── working/WorkingPanel.tsx      # Working/staged sections + stash diff panels
     │       └── search/SearchPanel.tsx        # Full-text search input + results
@@ -147,8 +148,11 @@ The project has a real test suite; keep it green and extend it when changing log
 
 **What to test (priority order):**
 - **Server git/graph logic** (`server/src/git/graph.rs`) — the highest-value, trickiest code: `build_graph` (all-refs seeding, dangling-edge dropping, `since`/`until` window + `before_count`/`after_count`, ref-scoping), tag peeling, `time_bounds`. Test against **real temp repos** built with `git2` (see the `temp_repo`/`commit` helpers in the `#[cfg(test)] mod tests` there) — deterministic, no network, cleaned up after.
-- **Pure frontend algorithms** — `collapse.ts` (`detectRuns`, `detectBranchRollups`, `applyCollapse`), `assignLanes` (exported from `CommitGraph.tsx`: tight packing, trunk-in-lane-0, merge first-parent lane), `branches.ts` (`defaultVisibility`, `shownBranchNames`). These are pure functions — unit-test them directly, no DOM.
+- **Other server git modules** — `diff.rs` (status classification add/modify/delete, addition/deletion counts, two-commit + path filter, staged vs working incl. untracked, unborn-HEAD staged diff, `status_summary` dirty flag, stash list + `diff_stash`), `tree.rs` (recursive `list_tree` with nested `a/b/c` paths, blob-only sizing, binary blob → empty content, not-found errors), `commits.rs` (`get_commit_detail` signature/message/parents/tree_oid, ref resolution, not-found), and `containment.rs`. All use the same real-temp-repo pattern as `graph.rs`.
+- **Pure frontend algorithms** — `collapse.ts` (`detectRuns`, `detectBranchRollups`, `applyCollapse`, merge/region folding), `assignLanes` + `computeWorkingPlacement` (exported from `CommitGraph.tsx`: tight packing, trunk-in-lane-0, merge first-parent lane, working-node non-overlap), `branches.ts` (`defaultVisibility`, `shownBranchNames`), `refBadge.ts` (`refBadgeColor`, `refBadgeClass`), `fileTree.ts` (`buildTree`, `compareTreeNodes`/`sortedTreeNodes`, `formatSize` — flat path list → nested tree, dirs-first sort), and `isSearchDisabled` (from `SearchPanel.tsx`). These are pure functions — unit-test them directly, no DOM.
 - **Not (yet) tested:** React components / DOM and the app shell — verified via build + manual for now. Prefer extracting pure logic out of components so it can be unit-tested (as with `assignLanes`, `collapse.ts`).
+
+**Coverage scope (important — read before judging the number):** `ui/vitest.config.ts` sets `coverage.include` to *only* the pure-logic `.ts` modules we unit-test (`collapse.ts`, `branches.ts`, `refBadge.ts`, `fileTree.ts`) — so the reported % reflects our tested logic, not the whole UI. Functions that are unit-tested but live *inside* React components (`assignLanes`/`computeWorkingPlacement` in `CommitGraph.tsx`, `isSearchDisabled` in `SearchPanel.tsx`) are intentionally left out of the report: v8 can't scope coverage to part of a file, and folding whole component bodies in just to count a few functions swamps the number with untestable JSX. Those functions are still guarded by their tests — the fix when you want them counted is to extract them into a plain `.ts` module and add it to `include`. When you add a pure-logic `.ts` module with a `*.test.ts`, **add its source file to `include`** so the report stays honest and in sync.
 
 **Where:** Rust tests are colocated in `#[cfg(test)]` modules. Frontend tests are colocated `*.test.ts` next to the source, run under **Vitest** (node environment; `ui/vitest.config.ts`).
 
