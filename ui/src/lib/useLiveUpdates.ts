@@ -21,10 +21,17 @@ export function useLiveUpdates(onChange: () => void) {
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let debounceTimer: ReturnType<typeof setTimeout> | undefined;
     let backoff = 500; // ms, grows to a cap
+    // False until the first successful open. Used to distinguish the initial
+    // connection (no catch-up needed) from a reconnect (catch-up refresh).
+    let hadConnection = false;
 
     const fireDebounced = () => {
       if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => cb.current(), 250);
+      // Short client-side debounce to coalesce the rare double-message (e.g. a
+      // broadcast immediately followed by a Lagged notice). The server already
+      // debounces filesystem bursts, so this only needs to be small — keeping
+      // it low keeps the working-tree count feeling responsive.
+      debounceTimer = setTimeout(() => cb.current(), 100);
     };
 
     async function wsBaseUrl(): Promise<string> {
@@ -53,6 +60,16 @@ export function useLiveUpdates(onChange: () => void) {
         return;
       }
       ws.onopen = () => {
+        // If this open follows a drop (backoff grew past its initial value), the
+        // repo may have changed while we were disconnected — e.g. the dev server
+        // restarted, or the machine slept. Do a catch-up refresh so the
+        // working-tree count and graph re-sync instead of waiting for the next
+        // filesystem event. The very first connection skips this (initial load
+        // already fetched everything).
+        if (hadConnection) {
+          fireDebounced();
+        }
+        hadConnection = true;
         backoff = 500; // reset backoff on a good connection
       };
       ws.onmessage = (ev) => {

@@ -339,6 +339,13 @@ pub fn status_summary(repo: &mut Repository) -> Result<StatusSummary, AppError> 
 /// Diff a single stash entry against its base (first parent) commit.
 /// A stash is a commit whose first parent is the commit that was checked out
 /// when the stash was created, so this shows what the stash actually changed.
+///
+/// A stash created with `--include-untracked`/`-u` also has a *third* parent
+/// (index 2) whose tree holds the untracked files. Those files are not present
+/// in the main stash tree, so a base→stash-tree diff alone misses them — an
+/// untracked-only stash would appear empty. We diff the untracked parent
+/// against an empty tree (every file an addition) and merge it into the base
+/// diff so untracked content shows up.
 pub fn diff_stash(repo: &mut Repository, index: usize) -> Result<DiffResponse, AppError> {
     // Resolve the stash entry's commit OID by index.
     let stashes = list_stashes(repo)?;
@@ -357,9 +364,21 @@ pub fn diff_stash(repo: &mut Repository, index: usize) -> Result<DiffResponse, A
         Err(_) => None,
     };
 
-    let diff = repo
+    let mut diff = repo
         .diff_tree_to_tree(base_tree.as_ref(), Some(&stash_tree), None)
         .map_err(AppError::Git)?;
+
+    // Third parent (index 2), if present, holds untracked files stashed with
+    // `-u`. Diff an empty tree → untracked tree so each untracked file appears
+    // as an addition, then merge it into the main diff.
+    if let Ok(untracked_parent) = stash_commit.parent(2) {
+        let untracked_tree = untracked_parent.tree().map_err(AppError::Git)?;
+        let untracked_diff = repo
+            .diff_tree_to_tree(None, Some(&untracked_tree), None)
+            .map_err(AppError::Git)?;
+        diff.merge(&untracked_diff).map_err(AppError::Git)?;
+    }
+
     parse_diff(diff)
 }
 
@@ -624,6 +643,57 @@ mod tests {
         // Out-of-range index is a NotFound, not a panic.
         let err = diff_stash(&mut repo, 99).unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
+        cleanup(dir);
+    }
+
+    #[test]
+    fn untracked_only_stash_shows_the_untracked_file() {
+        let (mut repo, dir) = temp_repo();
+        write_file(&repo, "a.txt", "v1\n");
+        commit_all(&repo, "init", 1000);
+
+        // Only an UNTRACKED file is dirty — no tracked changes at all. Git
+        // stores this in the stash's third parent (the untracked tree), which
+        // the naive base-vs-stash-tree diff misses.
+        write_file(&repo, "new.txt", "brand new\ncontent\n");
+        let sig = Signature::new("t", "t@t.co", &Time::new(2000, 0)).unwrap();
+        repo.stash_save(&sig, "wip untracked", Some(git2::StashFlags::INCLUDE_UNTRACKED))
+            .unwrap();
+
+        let resp = diff_stash(&mut repo, 0).unwrap();
+        // Regression guard: this used to be empty because the untracked parent
+        // was never diffed.
+        assert!(
+            !resp.files.is_empty(),
+            "untracked-only stash diff should not be empty"
+        );
+        let f = find(&resp, "new.txt");
+        assert_eq!(f.status, "added");
+        assert_eq!(f.additions, 2);
+        assert_eq!(f.deletions, 0);
+        cleanup(dir);
+    }
+
+    #[test]
+    fn stash_with_tracked_and_untracked_shows_both() {
+        let (mut repo, dir) = temp_repo();
+        write_file(&repo, "a.txt", "v1\n");
+        commit_all(&repo, "init", 1000);
+
+        // Modify a tracked file AND add an untracked one, then stash both.
+        write_file(&repo, "a.txt", "v1\nmodified\n");
+        write_file(&repo, "new.txt", "added\n");
+        let sig = Signature::new("t", "t@t.co", &Time::new(2000, 0)).unwrap();
+        repo.stash_save(&sig, "wip both", Some(git2::StashFlags::INCLUDE_UNTRACKED))
+            .unwrap();
+
+        let resp = diff_stash(&mut repo, 0).unwrap();
+        let tracked = find(&resp, "a.txt");
+        assert_eq!(tracked.status, "modified");
+        assert_eq!(tracked.additions, 1);
+        let untracked = find(&resp, "new.txt");
+        assert_eq!(untracked.status, "added");
+        assert_eq!(untracked.additions, 1);
         cleanup(dir);
     }
 

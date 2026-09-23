@@ -161,7 +161,14 @@ export default function App() {
           ? prev
           : prev ?? (g.nodes[0]?.oid ?? null),
       );
-      api.status.get().then(setStatus).catch(() => setStatus(null));
+      // Keep the last-known status on a transient fetch failure. Clobbering it
+      // to null here would drop the working-tree AND all stash pseudo-nodes
+      // (CommitGraph's specialNodes bails on !status) until the next refresh —
+      // that's the "stash node briefly disappeared" blip. A fresh repo load
+      // (loadGraph) re-establishes status from scratch, so nothing goes stale.
+      api.status.get().then(setStatus).catch(() => {
+        /* keep previous status */
+      });
     } catch {
       // Non-fatal: a transient failure shouldn't disrupt the current view.
     }
