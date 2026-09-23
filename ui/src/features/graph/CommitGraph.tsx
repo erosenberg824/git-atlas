@@ -653,20 +653,16 @@ export default function CommitGraph({
     return m;
   }, [status, indexByOid]);
 
-  // Stashes whose base is NOT in the loaded window: no badge host → render as a
-  // node so they stay visible.
-  const orphanStashIndices = useMemo(() => {
-    const s = new Set<number>();
-    if (!status) return s;
-    for (const stash of status.stashes) {
-      if (!stash.base_oid || !indexByOid.has(stash.base_oid)) s.add(stash.index);
-    }
-    return s;
-  }, [status, indexByOid]);
-
-  // Only orphan stashes render as a node — based stashes live purely as a badge
-  // on their base commit and are opened via the right-pane StashPanel.
-  const visibleStashIndices = orphanStashIndices;
+  // A stash is only ever shown as a badge on its base commit, and only when that
+  // base is in the rendered window. If the base isn't rendered — either off the
+  // loaded window or folded away inside a collapsed run / merge secondary path —
+  // the stash simply isn't drawn in the graph. It's never lost: it stays
+  // reachable via the stash list / right-pane StashPanel. We deliberately do NOT
+  // float an "orphan" node for it, because a stash carries no meaningful graph
+  // position of its own, so a floating node reads as clutter that appears and
+  // disappears as folds change (e.g. merging main into a feature branch folds
+  // the mainline and would otherwise orphan every stash anchored there).
+  const visibleStashIndices = useMemo(() => new Set<number>(), []);
 
   // The stash index currently selected (its `__stash__<index>` node is the
   // selection), or null. Used to shade its base commit's badge as active.
