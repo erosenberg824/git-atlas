@@ -29,6 +29,7 @@ export default defineConfig({
       // KEEP IN SYNC: when you add a pure-logic .ts module with a *.test.ts,
       // add its source file here so the report reflects it.
       include: [
+        "src/components/tooltipPosition.ts",
         "src/features/graph/collapse.ts",
         "src/features/graph/branches.ts",
         "src/features/graph/branchGroups.ts",

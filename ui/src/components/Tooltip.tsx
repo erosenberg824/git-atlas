@@ -6,6 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { computeTooltipPosition, type Position } from "./tooltipPosition";
 
 /**
  * Shared styled tooltip used across the app in place of the native `title`
@@ -42,11 +43,6 @@ export interface TooltipProps {
   className?: string;
 }
 
-/** Gap in px between the trigger and the tooltip. */
-const OFFSET = 6;
-/** Keep at least this many px between the tooltip and the viewport edge. */
-const MARGIN = 8;
-
 export default function Tooltip({
   primary,
   secondary,
@@ -58,10 +54,11 @@ export default function Tooltip({
   const triggerRef = useRef<HTMLSpanElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const [pos, setPos] = useState<Position | null>(null);
 
   // Measure after paint so we know the tooltip's real size, then clamp it into
-  // the viewport. Runs while open and re-runs if content changes size.
+  // the viewport (the pure math lives in `computeTooltipPosition`). Runs while
+  // open and re-runs if content changes size.
   useLayoutEffect(() => {
     if (!open) return;
     const trigger = triggerRef.current;
@@ -69,25 +66,15 @@ export default function Tooltip({
     if (!trigger || !tip) return;
 
     const t = trigger.getBoundingClientRect();
-    const tip_r = tip.getBoundingClientRect();
-
-    // Horizontally center on the trigger, then clamp to the viewport.
-    let left = t.left + t.width / 2 - tip_r.width / 2;
-    left = Math.max(
-      MARGIN,
-      Math.min(left, window.innerWidth - tip_r.width - MARGIN),
+    const r = tip.getBoundingClientRect();
+    setPos(
+      computeTooltipPosition(
+        t,
+        { width: r.width, height: r.height },
+        { width: window.innerWidth, height: window.innerHeight },
+        placement,
+      ),
     );
-
-    // Prefer the requested side; flip if it would overflow.
-    let top =
-      placement === "bottom" ? t.bottom + OFFSET : t.top - tip_r.height - OFFSET;
-    if (placement === "bottom" && top + tip_r.height > window.innerHeight - MARGIN) {
-      top = t.top - tip_r.height - OFFSET;
-    } else if (placement === "top" && top < MARGIN) {
-      top = t.bottom + OFFSET;
-    }
-
-    setPos({ left, top });
   }, [open, placement, primary, secondary]);
 
   const show = useCallback(() => setOpen(true), []);
