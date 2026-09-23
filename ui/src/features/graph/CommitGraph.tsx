@@ -190,6 +190,59 @@ export interface WorkingPlacement {
 }
 
 /**
+ * Find a collision-free cell one row ABOVE a base node for a pseudo-node
+ * (working tree or a stash) that "grows out of" that base. Prefers the base's
+ * own lane when free (base is a leaf / that lane is empty on the row above);
+ * otherwise slides RIGHT to the lowest free lane on that row so it never
+ * overlaps the base's child commit(s), another branch on that row, or any
+ * previously-placed pseudo-node.
+ *
+ * `reserved` is an in/out set of already-claimed `"lane,row"` cells (real nodes
+ * are pre-seeded; each placement adds its own cell) so multiple pseudo-nodes
+ * anchored above the same base (e.g. the working node + a stash both built on
+ * HEAD) fan out into distinct lanes instead of stacking on top of each other.
+ *
+ * Pure except for the documented mutation of `reserved`. Returns null when the
+ * base isn't in the rendered window.
+ */
+export function placeAboveBase(
+  baseOid: string | null,
+  rowOf: Map<string, number>,
+  laneOf: Map<string, number>,
+  reserved: Set<string>,
+): WorkingPlacement | null {
+  if (!baseOid) return null;
+  const baseRow = rowOf.get(baseOid);
+  if (baseRow === undefined) return null;
+  const baseLane = laneOf.get(baseOid) ?? 0;
+  const targetRow = baseRow - 1;
+
+  // Lowest free lane at or to the right of the base's lane that isn't already
+  // occupied by a rendered node or an earlier pseudo-node on the target row.
+  let lane = baseLane;
+  while (reserved.has(`${lane},${targetRow}`)) lane++;
+  reserved.add(`${lane},${targetRow}`);
+
+  return {
+    lane,
+    row: targetRow,
+    offset: lane !== baseLane,
+    x: X_BASE + lane * LANE_WIDTH,
+    y: Y_BASE + targetRow * ROW_HEIGHT,
+  };
+}
+
+/** Seed a reserved-cell set from every rendered node's `"lane,row"`. */
+export function reservedCellsFrom(
+  rowOf: Map<string, number>,
+  laneOf: Map<string, number>,
+): Set<string> {
+  const reserved = new Set<string>();
+  for (const [id, r] of rowOf) reserved.add(`${laneOf.get(id) ?? 0},${r}`);
+  return reserved;
+}
+
+/**
  * Decide where the "Working tree" pseudo-node sits. It anchors one row ABOVE
  * HEAD. In HEAD's own lane when that cell is free (HEAD is a leaf); otherwise it
  * slides RIGHT to the lowest free lane on that row so it never overlaps HEAD's
@@ -207,29 +260,7 @@ export function computeWorkingPlacement(
   rowOf: Map<string, number>,
   laneOf: Map<string, number>,
 ): WorkingPlacement | null {
-  if (!headOid) return null;
-  const headRow = rowOf.get(headOid);
-  if (headRow === undefined) return null;
-  const headLane = laneOf.get(headOid) ?? 0;
-  const targetRow = headRow - 1;
-
-  // Lanes occupied by any rendered node on the target row.
-  const occupiedLanes = new Set<number>();
-  for (const [id, r] of rowOf) {
-    if (r === targetRow) occupiedLanes.add(laneOf.get(id) ?? 0);
-  }
-
-  // Lowest free lane at or to the right of HEAD's lane.
-  let lane = headLane;
-  while (occupiedLanes.has(lane)) lane++;
-
-  return {
-    lane,
-    row: targetRow,
-    offset: lane !== headLane,
-    x: X_BASE + lane * LANE_WIDTH,
-    y: Y_BASE + targetRow * ROW_HEIGHT,
-  };
+  return placeAboveBase(headOid, rowOf, laneOf, reservedCellsFrom(rowOf, laneOf));
 }
 
 export default function CommitGraph({
@@ -584,16 +615,6 @@ export default function CommitGraph({
     return m;
   }, [renderOrder]);
 
-  const laneOf = (oid: string) => lanes.get(oid) ?? 0;
-  const posFor = (oid: string) => {
-    const idx = indexByOid.get(oid);
-    if (idx === undefined) return null;
-    return {
-      x: X_BASE + laneOf(oid) * LANE_WIDTH,
-      y: Y_BASE + idx * ROW_HEIGHT,
-    };
-  };
-
   const flowNodes: Node[] = useMemo(
     () =>
       renderOrder.map((id, index) => {
@@ -658,6 +679,31 @@ export default function CommitGraph({
     [headOid, indexByOid, lanes],
   );
 
+  // Stash pseudo-node placements. Each stash "grows out of" its base commit
+  // (the commit it was created on), so — like the working node above HEAD — it
+  // anchors one row ABOVE its base in a collision-free lane. We share ONE
+  // reserved-cell set seeded with every rendered node AND the working node's
+  // cell, then place stashes in order, so a stash never overlaps a commit, the
+  // working node, or another stash (e.g. several stashes all based on HEAD fan
+  // out to the right). Stashes whose base is outside the loaded window fall back
+  // to a dedicated far-right column near the top so they stay visible.
+  const stashPlacements = useMemo(() => {
+    const map = new Map<number, WorkingPlacement | null>();
+    if (!status) return map;
+    const reserved = reservedCellsFrom(indexByOid, lanes);
+    // Reserve the working node's cell so stashes never land on it.
+    if (workingPlacement) {
+      reserved.add(`${workingPlacement.lane},${workingPlacement.row}`);
+    }
+    status.stashes.forEach((stash) => {
+      const base = stash.base_oid && indexByOid.has(stash.base_oid)
+        ? stash.base_oid
+        : null;
+      map.set(stash.index, placeAboveBase(base, indexByOid, lanes, reserved));
+    });
+    return map;
+  }, [status, workingPlacement, indexByOid, lanes]);
+
   // Working-tree pseudo-node (working + staged) + one node per stash.
   const specialNodes: Node[] = useMemo(() => {
     if (!status) return [];
@@ -686,14 +732,14 @@ export default function CommitGraph({
       });
     }
 
-    // Stash nodes: placed to the right of their base commit's lane.
+    // Stash nodes: anchored one row ABOVE their base commit (like the working
+    // node above HEAD), in a collision-free lane. Falls back to a far-right
+    // column near the top when the base isn't in the loaded window.
     status.stashes.forEach((stash) => {
-      const anchor = stash.base_oid && posFor(stash.base_oid);
+      const placement = stashPlacements.get(stash.index);
       const id = stashNodeId(stash.index);
-      // If the base commit isn't in the loaded window, stack stashes in a
-      // dedicated far-right column near the top so they're still visible.
-      const pos = anchor
-        ? { x: anchor.x + LANE_WIDTH, y: anchor.y - ROW_HEIGHT / 2 }
+      const pos = placement
+        ? { x: placement.x, y: placement.y }
         : { x: X_BASE, y: Y_BASE + stash.index * ROW_HEIGHT };
       out.push({
         id,
@@ -713,7 +759,7 @@ export default function CommitGraph({
 
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, workingPlacement, indexByOid, lanes, selectedOid, onSelectCommit]);
+  }, [status, workingPlacement, stashPlacements, indexByOid, lanes, selectedOid, onSelectCommit]);
 
   const flowEdges: Edge[] = useMemo(
     () =>
@@ -789,11 +835,18 @@ export default function CommitGraph({
     status.stashes.forEach((stash) => {
       if (stash.base_oid && indexByOid.has(stash.base_oid)) {
         const id = stashNodeId(stash.index);
+        // Arrow points base → stash, matching the HEAD → working direction: the
+        // base commit (below on screen) leads into the stashed state above it.
+        // The stash sits one row ABOVE its base; when it's offset to the RIGHT
+        // (base is not a leaf, or it dodged the working node / another stash),
+        // emit from the base's right side so the line bends cleanly instead of
+        // cutting across the base's children; otherwise emit straight up.
+        const offset = stashPlacements.get(stash.index)?.offset ?? false;
         out.push({
-          id: `${id}-${stash.base_oid}`,
-          source: id,
-          target: stash.base_oid,
-          sourceHandle: "s-bottom",
+          id: `${stash.base_oid}-${id}`,
+          source: stash.base_oid,
+          target: id,
+          sourceHandle: offset ? "s-right" : "s-top",
           targetHandle: "t-bottom",
           type: "default",
           style: { stroke: "#b7791f", strokeWidth: 2, strokeDasharray: "4 3" },
@@ -803,7 +856,7 @@ export default function CommitGraph({
     });
 
     return out;
-  }, [status, headOid, indexByOid, workingPlacement]);
+  }, [status, headOid, indexByOid, workingPlacement, stashPlacements]);
 
   const allNodes = useMemo(
     () => [...flowNodes, ...specialNodes],

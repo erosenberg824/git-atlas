@@ -37,17 +37,10 @@ function SpecialNodeComponent({ data }: NodeProps) {
             : "border-amber-700/60 bg-amber-950/20 hover:border-amber-400/70",
       ].join(" ")}
     >
-      {/* Source handle: kept for stash pseudo-nodes, which sit beside their
-          base commit and emit toward it. */}
-      <Handle
-        id="s-bottom"
-        type="source"
-        position={Position.Bottom}
-        className="!bg-transparent !border-0"
-      />
-
-      {/* Target handle: the working-tree node sits ABOVE HEAD and receives the
-          HEAD → working edge into its bottom. */}
+      {/* Target handle: both pseudo-nodes (working tree and each stash) sit one
+          row ABOVE their base commit and receive the base → pseudo edge into
+          their bottom, so the arrow reads as "the base commit leads up into
+          this derived state". */}
       <Handle
         id="t-bottom"
         type="target"
