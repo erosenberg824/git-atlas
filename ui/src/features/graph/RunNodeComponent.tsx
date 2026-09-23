@@ -47,10 +47,18 @@ function RunNodeComponent({ data }: NodeProps) {
           : "border-purple-700/60 hover:border-purple-400/70",
       ].join(" ")}
     >
-      {/* Source handle on top (toward newer child), target on bottom (toward
-          older parent) — same convention as commit nodes. */}
+      {/* Handles: full source + target set so cross-lane edges (a collapsed
+          region on a side branch) can dock through the facing SIDE ports, per
+          `pickEdgePorts`. Top/bottom are the within-lane vertical ports; left/
+          right are the cross-lane ports. Extra handles are hidden. */}
       <Handle id="s-top" type="source" position={Position.Top} className="!bg-[#30363d] !border-0" />
+      <Handle id="s-bottom" type="source" position={Position.Bottom} className="!bg-[#30363d] !border-0 !opacity-0" />
+      <Handle id="s-left" type="source" position={Position.Left} className="!bg-[#30363d] !border-0 !opacity-0" />
+      <Handle id="s-right" type="source" position={Position.Right} className="!bg-[#30363d] !border-0 !opacity-0" />
       <Handle id="t-bottom" type="target" position={Position.Bottom} className="!bg-[#30363d] !border-0" />
+      <Handle id="t-top" type="target" position={Position.Top} className="!bg-[#30363d] !border-0 !opacity-0" />
+      <Handle id="t-left" type="target" position={Position.Left} className="!bg-[#30363d] !border-0 !opacity-0" />
+      <Handle id="t-right" type="target" position={Position.Right} className="!bg-[#30363d] !border-0 !opacity-0" />
 
       {/* Expand affordance, top-right corner — matches the commit/merge collapse
           control's position so the control does not jump between corners on

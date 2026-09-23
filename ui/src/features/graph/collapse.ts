@@ -1102,6 +1102,20 @@ export function applyCollapse(
   const runNodes = new Map<string, CollapsedRunData>();
   const foldedInto = new Map<string, string>();
 
+  // For Option-A (renderAnchor / merge) folds: the set of member oids for each
+  // fold, so we can suppress the phantom "merge base → merge" edge. A folded
+  // secondary path's OLDEST member's parent is the merge base (the fork point),
+  // which lives on the mainline OUTSIDE the fold. Naively rerouting that
+  // boundary edge through `renderId` turns `base → oldestMember` into
+  // `base → merge`, making the merge look like a direct child of the fork point
+  // — several generations down the mainline (the "collapsed HEAD attaches to an
+  // ancestor" bug). The merge is ALREADY connected to that base through its
+  // first-parent chain, so this incoming boundary edge must be dropped, not
+  // rerouted. We drop any edge whose TARGET is a member of a renderAnchor fold
+  // but whose SOURCE is not a member of the SAME fold (i.e. an edge entering the
+  // folded branch from outside/below).
+  const anchorMembership = new Map<string, string>(); // member oid → fold id
+
   const collapsedRuns = runs.filter((r) => !expanded.has(r.id));
   for (const run of collapsedRuns) {
     // Option-A merge fold: fold members onto an EXISTING rendered commit
@@ -1109,7 +1123,10 @@ export function applyCollapse(
     // normal node; the boundary edge reroutes onto it via `renderId` and the
     // resulting self-loop is dropped by the `s === t` guard below.
     if (run.renderAnchor) {
-      for (const oid of run.oids) foldedInto.set(oid, run.renderAnchor);
+      for (const oid of run.oids) {
+        foldedInto.set(oid, run.renderAnchor);
+        anchorMembership.set(oid, run.id);
+      }
       continue;
     }
     const first = nodeByOid.get(run.oids[0])!; // newest
@@ -1152,6 +1169,18 @@ export function applyCollapse(
   const seen = new Set<string>();
   const effEdges: CommitEdge[] = [];
   for (const e of edges) {
+    // Suppress the phantom "merge base → merge" edge. For an Option-A merge
+    // fold, the OLDEST folded member's parent is the merge base (fork point),
+    // an outside/mainline node. Rerouting that boundary edge through `renderId`
+    // would produce `base → merge`, making the merge render as a direct child
+    // of the fork point (pulled down several generations to just above the
+    // branch point) instead of at the mainline tip where it was actually
+    // merged. The merge is already linked to that base via its first-parent
+    // chain, so drop any edge ENTERING a folded merge member from a node that
+    // is NOT a member of the same fold (i.e. from outside/below the branch).
+    const targetFold = anchorMembership.get(e.target);
+    if (targetFold && anchorMembership.get(e.source) !== targetFold) continue;
+
     const s = renderId(e.source);
     const t = renderId(e.target);
     if (s === t) continue; // edge internal to a collapsed run

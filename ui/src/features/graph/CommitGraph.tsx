@@ -18,6 +18,7 @@ import CommitNodeComponent from "./CommitNodeComponent";
 import SpecialNodeComponent from "./SpecialNodeComponent";
 import RunNodeComponent from "./RunNodeComponent";
 import MergeNodeComponent from "./MergeNodeComponent";
+import { pickEdgePorts } from "./edgePorts";
 import {
   regionAround,
   foldableNodeIds,
@@ -574,7 +575,19 @@ export default function CommitGraph({
     for (const n of graph.nodes) {
       const runId = collapsed.foldedInto.get(n.oid);
       if (runId) {
-        if (!emittedRun.has(runId)) {
+        // This commit is folded away. Emit its fold's render id at this position
+        // ONLY when that id is a MINTED summary/run node (region rollup) — those
+        // exist nowhere else, so their row is defined by where their members sat.
+        //
+        // Option-A merge folds instead reuse an EXISTING commit (the merge) as
+        // the anchor: `runId` is the merge's own oid, which is NOT a minted run
+        // node and is emitted on its own turn at its real (top) position. Do NOT
+        // re-emit it here — doing so pushes the merge oid a SECOND time down at
+        // the folded members' old position, and since `indexByOid` keeps the
+        // last index, the merge's row gets hijacked to just above the branch
+        // point instead of staying at the mainline tip. So for merge folds we
+        // simply drop the folded members and let the anchor keep its own row.
+        if (collapsed.runNodes.has(runId) && !emittedRun.has(runId)) {
           order.push(runId);
           emittedRun.add(runId);
         }
@@ -583,7 +596,7 @@ export default function CommitGraph({
       }
     }
     return order;
-  }, [graph.nodes, collapsed.foldedInto]);
+  }, [graph.nodes, collapsed.foldedInto, collapsed.runNodes]);
 
   // First-parent map among RENDERED ids (commit oids + summary node ids). Used
   // by the lane algorithm so a merge's 2nd+ parents branch into their own lane
@@ -828,26 +841,15 @@ export default function CommitGraph({
         .filter((e) => indexByOid.has(e.source) && indexByOid.has(e.target))
         .map((e) => {
         // source = parent (lower on screen), target = child (higher on screen).
-        // source = parent (lower on screen), target = child (higher on screen).
         // `lanes` now covers commits AND summary nodes, so a plain lookup works.
-        const sourceLane = lanes.get(e.source) ?? 0;
-        const targetLane = lanes.get(e.target) ?? 0;
-
-        // Same lane → straight vertical: parent emits from its top, child
-        // receives at its bottom. Different lanes (branch/merge) → route through
-        // the side facing the other lane so the line bends cleanly instead of
-        // crossing over intervening nodes.
-        let sourceHandle = "s-top";
-        let targetHandle = "t-bottom";
-        if (targetLane < sourceLane) {
-          // child is to the LEFT of the parent
-          sourceHandle = "s-left";
-          targetHandle = "t-right";
-        } else if (targetLane > sourceLane) {
-          // child is to the RIGHT of the parent
-          sourceHandle = "s-right";
-          targetHandle = "t-left";
-        }
+        // Port selection is delegated to `pickEdgePorts`, which chooses the
+        // source/target handles purely from the two nodes' relative grid
+        // positions (see edgePorts.ts) so each end connects through the side
+        // that actually faces the other node.
+        const { sourceHandle, targetHandle } = pickEdgePorts(
+          { lane: lanes.get(e.source) ?? 0, row: indexByOid.get(e.source) ?? 0 },
+          { lane: lanes.get(e.target) ?? 0, row: indexByOid.get(e.target) ?? 0 },
+        );
 
         return {
           id: `${e.source}-${e.target}`,

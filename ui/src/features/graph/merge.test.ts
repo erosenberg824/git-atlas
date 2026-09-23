@@ -131,6 +131,16 @@ describe("Property 2: Orphan-Safety — simple feature merge", () => {
 
     // First-parent side untouched: the c1 -> c2 edge is preserved.
     expect(eff.edges.some((e) => e.source === "c1" && e.target === "c2")).toBe(true);
+
+    // REGRESSION (phantom merge-base edge): c1 is the merge base (fork point).
+    // The boundary edge c1 -> f1 must be DROPPED, not rerouted to c1 -> M.
+    // Otherwise M renders as a direct child of the fork point — pulled down
+    // several generations to just above the branch point instead of sitting at
+    // the mainline tip where the branch was actually merged. M's only in-edge
+    // must be its first parent c2 -> M.
+    expect(eff.edges.some((e) => e.source === "c1" && e.target === "M")).toBe(false);
+    const inM = eff.edges.filter((e) => e.target === "M");
+    expect(inM).toEqual([{ source: "c2", target: "M" }]);
   });
 });
 

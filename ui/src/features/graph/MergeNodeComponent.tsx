@@ -241,6 +241,12 @@ function MergeNodeComponent({ data }: NodeProps) {
         className="!bg-[#30363d] !border-0"
       />
       <Handle
+        id="s-bottom"
+        type="source"
+        position={Position.Bottom}
+        className="!bg-[#30363d] !border-0 !opacity-0"
+      />
+      <Handle
         id="s-left"
         type="source"
         position={Position.Left}
