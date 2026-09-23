@@ -31,6 +31,11 @@ pub struct RefLabel {
     /// Commit time (unix seconds) of the ref's target commit — lets the client
     /// rank branches by recency (for the "recent branches" default visibility).
     pub tip_ts: Option<i64>,
+    /// For local branches: the short name of the configured upstream
+    /// (remote-tracking) branch, e.g. `origin/main`. `None` for remotes/tags or
+    /// when the local branch has no upstream configured. Lets the client pair a
+    /// local branch with its remote counterpart in the branch picker.
+    pub upstream: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
@@ -280,6 +285,7 @@ fn collect_refs(repo: &Repository) -> Result<Vec<RefLabel>, AppError> {
                 kind: RefKind::Head,
                 is_head: true,
                 tip_ts,
+                upstream: None,
             });
         }
     }
@@ -321,12 +327,24 @@ fn collect_refs(repo: &Repository) -> Result<Vec<RefLabel>, AppError> {
 
         let is_head = head_name.as_deref() == Some(&short_name);
 
+        // For local branches, resolve the configured upstream (tracking) branch
+        // so the client can pair local↔remote branches in the picker.
+        let upstream = if kind == RefKind::Branch {
+            repo.find_branch(&short_name, git2::BranchType::Local)
+                .and_then(|b| b.upstream())
+                .ok()
+                .and_then(|u| u.name().ok().flatten().map(str::to_owned))
+        } else {
+            None
+        };
+
         labels.push(RefLabel {
             name: short_name,
             oid: target_oid.to_string(),
             kind,
             is_head,
             tip_ts,
+            upstream,
         });
     }
 
@@ -416,6 +434,56 @@ mod tests {
         let summaries: Vec<&str> = g.nodes.iter().map(|n| n.summary.as_str()).collect();
         assert!(summaries.contains(&"feat-only"), "expected feat-only, got {summaries:?}");
         assert!(g.refs.iter().any(|r| r.name == "feature"));
+        cleanup(dir);
+    }
+
+    #[test]
+    fn local_branch_exposes_configured_upstream() {
+        let (repo, dir) = temp_repo();
+        let base = commit(&repo, "base", 1000);
+        let base_commit = repo.find_commit(base).unwrap();
+
+        // Simulate a remote-tracking branch: configure an `origin` remote, then
+        // create refs/remotes/origin/master and set it as the local upstream.
+        repo.remote("origin", "https://example.invalid/repo.git").unwrap();
+        repo.reference(
+            "refs/remotes/origin/master",
+            base,
+            true,
+            "seed remote",
+        )
+        .unwrap();
+        let mut local = repo
+            .find_branch("master", git2::BranchType::Local)
+            .or_else(|_| repo.find_branch("main", git2::BranchType::Local))
+            .unwrap();
+        let local_name = local.name().unwrap().unwrap().to_string();
+        // Point the remote-tracking ref at the local branch's actual name so the
+        // upstream (origin/<name>) exists regardless of default branch naming.
+        repo.reference(
+            &format!("refs/remotes/origin/{local_name}"),
+            base,
+            true,
+            "seed remote",
+        )
+        .unwrap();
+        local.set_upstream(Some(&format!("origin/{local_name}"))).unwrap();
+
+        // A second local branch WITHOUT any upstream configured.
+        repo.branch("feature", &base_commit, false).unwrap();
+
+        let g = build_graph(&repo, None, 500, None, None, None).unwrap();
+
+        let tracked = g.refs.iter().find(|r| r.name == local_name).unwrap();
+        assert_eq!(tracked.upstream.as_deref(), Some(format!("origin/{local_name}").as_str()));
+
+        let untracked = g.refs.iter().find(|r| r.name == "feature").unwrap();
+        assert_eq!(untracked.upstream, None);
+
+        // Remote branches never carry an upstream of their own.
+        let remote = g.refs.iter().find(|r| r.kind == RefKind::RemoteBranch).unwrap();
+        assert_eq!(remote.upstream, None);
+
         cleanup(dir);
     }
 

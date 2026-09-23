@@ -13,8 +13,10 @@ import {
   branchesFromRefs,
   defaultVisibility,
   shownBranchNames,
+  nextVisibility,
   type BranchVisibility,
 } from "./features/graph/branches";
+import { groupBranches } from "./features/graph/branchGroups";
 import BranchControl from "./features/graph/BranchControl";
 import FindRefBox from "./features/graph/FindRefBox";
 import WindowBanner from "./features/graph/WindowBanner";
@@ -155,11 +157,20 @@ export default function App() {
   const cycleBranch = useCallback((name: string) => {
     setBranchVis((prev) => {
       const next = new Map(prev);
-      const cur = next.get(name) ?? "hidden";
-      next.set(
-        name,
-        cur === "expanded" ? "collapsed" : cur === "collapsed" ? "hidden" : "expanded",
-      );
+      next.set(name, nextVisibility(next.get(name) ?? "hidden"));
+      return next;
+    });
+  }, []);
+
+  // Cycle a group of branches together in lockstep: the next state is computed
+  // once (from the group's first member) and applied to every member, so a
+  // paired local+remote group toggles as one.
+  const cycleBranches = useCallback((names: string[]) => {
+    if (names.length === 0) return;
+    setBranchVis((prev) => {
+      const next = new Map(prev);
+      const target = nextVisibility(next.get(names[0]) ?? "hidden");
+      for (const name of names) next.set(name, target);
       return next;
     });
   }, []);
@@ -457,27 +468,36 @@ export default function App() {
               />
             )}
             <div className="relative flex flex-col flex-1 min-h-0">
-            {/* Graph controls overlay: find box + branch control toggle */}
+            {/* Graph controls overlay: find box + branch control toggle.
+                The branch panel accordions down directly under the Branches
+                button (same left-anchored column). */}
             {graph && (
-              <div className="absolute top-2 left-2 z-20 flex items-center gap-2">
+              <div className="absolute top-2 left-2 z-20 flex items-start gap-2">
                 <FindRefBox refs={graph.refs} onJump={(oid) => setJumpToOid(oid)} />
-                <button
-                  onClick={() => setShowBranchControl((s) => !s)}
-                  className="flex items-center gap-1 px-2 py-1 text-xs text-[#8b949e] hover:text-[#e6edf3] border border-[#30363d] hover:border-[#58a6ff]/50 rounded-md bg-[#161b22] transition-colors"
-                  title="Show/hide branches"
-                >
-                  <GitBranch size={12} />
-                  Branches
-                </button>
+                <div className="flex flex-col gap-1">
+                  <button
+                    onClick={() => setShowBranchControl((s) => !s)}
+                    className={[
+                      "self-start flex items-center gap-1 px-2 py-1 text-xs border rounded-md transition-colors",
+                      showBranchControl
+                        ? "text-[#e6edf3] border-[#58a6ff] bg-[#1f6feb]/35 shadow-inner"
+                        : "text-[#8b949e] hover:text-[#e6edf3] border-[#30363d] bg-[#161b22] hover:border-[#58a6ff]/50",
+                    ].join(" ")}
+                    title="Show/hide branches"
+                  >
+                    <GitBranch size={12} />
+                    Branches
+                  </button>
+                  {showBranchControl && (
+                    <BranchControl
+                      groups={groupBranches(branchesFromRefs(graph.refs))}
+                      visibility={branchVis}
+                      onCycle={cycleBranch}
+                      onCycleGroup={cycleBranches}
+                    />
+                  )}
+                </div>
               </div>
-            )}
-            {showBranchControl && graph && (
-              <BranchControl
-                branches={branchesFromRefs(graph.refs)}
-                visibility={branchVis}
-                onCycle={cycleBranch}
-                onClose={() => setShowBranchControl(false)}
-              />
             )}
             {graphLoading ? (
               <div className="flex items-center justify-center h-full text-[#8b949e]">

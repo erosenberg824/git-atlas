@@ -49,7 +49,7 @@ describe("detectRuns", () => {
     const { nodes, edges } = linear(10);
     // Put a tag on c5 → it must break the run and stay visible.
     const refs = new Map<string, RefLabel[]>([
-      ["c5", [{ name: "v1", oid: "c5", kind: "tag", is_head: false, tip_ts: 5000 }]],
+      ["c5", [{ name: "v1", oid: "c5", kind: "tag", is_head: false, tip_ts: 5000, upstream: null }]],
     ]);
     const runs = detectRuns(nodes, edges, refs, null, 3);
     const folded = new Set(runs.flatMap((r) => r.oids));
@@ -505,7 +505,7 @@ describe("bug: expanding un-folds only one commit at a time (Defect 6)", () => {
     const { nodes, edges } = linear(24);
     // Tag c12 → breaks the interior into two separate foldable runs.
     const refs = new Map<string, RefLabel[]>([
-      ["c12", [{ name: "v1", oid: "c12", kind: "tag", is_head: false, tip_ts: 12000 }]],
+      ["c12", [{ name: "v1", oid: "c12", kind: "tag", is_head: false, tip_ts: 12000, upstream: null }]],
     ]);
     const runs = detectRuns(nodes, edges, refs, null, 8);
     expect(runs.length).toBeGreaterThanOrEqual(2);
@@ -921,7 +921,7 @@ describe("bug: on-demand eligibility (Defect 1.10 / Property 12)", () => {
 
     // A tag on an interior a-chain commit no longer makes it non-foldable.
     const tagRefs = new Map<string, RefLabel[]>([
-      ["a2", [{ name: "v1", oid: "a2", kind: "tag", is_head: false, tip_ts: 2000 }]],
+      ["a2", [{ name: "v1", oid: "a2", kind: "tag", is_head: false, tip_ts: 2000, upstream: null }]],
     ]);
     const tagged = regionAround("a2", nodes, edges, tagRefs);
     expect(tagged).not.toBeNull();
@@ -929,7 +929,7 @@ describe("bug: on-demand eligibility (Defect 1.10 / Property 12)", () => {
 
     // But a HEAD ref on the same commit keeps it pinned (never folded).
     const headRefs = new Map<string, RefLabel[]>([
-      ["a2", [{ name: "main", oid: "a2", kind: "head", is_head: true, tip_ts: 2000 }]],
+      ["a2", [{ name: "main", oid: "a2", kind: "head", is_head: true, tip_ts: 2000, upstream: null }]],
     ]);
     expect(regionAround("a2", nodes, edges, headRefs)).toBeNull();
   });
@@ -1068,10 +1068,10 @@ describe("preservation R3: whole-region expand reveals all + edges (3.9)", () =>
 describe("preservation R3: branches.ts server-ref scoping unchanged (3.11)", () => {
   it("defaultVisibility + shownBranchNames produce the expected scoping", () => {
     const refs: RefLabel[] = [
-      { name: "main", oid: "m", kind: "branch", is_head: true, tip_ts: 5000 },
-      { name: "feature-a", oid: "fa", kind: "branch", is_head: false, tip_ts: 4000 },
-      { name: "feature-b", oid: "fb", kind: "branch", is_head: false, tip_ts: 3000 },
-      { name: "origin/old", oid: "ro", kind: "remotebranch", is_head: false, tip_ts: 100 },
+      { name: "main", oid: "m", kind: "branch", is_head: true, tip_ts: 5000, upstream: null },
+      { name: "feature-a", oid: "fa", kind: "branch", is_head: false, tip_ts: 4000, upstream: null },
+      { name: "feature-b", oid: "fb", kind: "branch", is_head: false, tip_ts: 3000, upstream: null },
+      { name: "origin/old", oid: "ro", kind: "remotebranch", is_head: false, tip_ts: 100, upstream: null },
     ];
     const branches = branchesFromRefs(refs);
     const vis = defaultVisibility(branches, 1);
@@ -1128,7 +1128,7 @@ describe("Property 15: foldableNodeIds eligibility over the confirmed chain", ()
     const refsByOid = new Map<string, RefLabel[]>([
       [
         "772eb2e",
-        [{ name: "main", oid: "772eb2e", kind: "head", is_head: true, tip_ts: 5000 }],
+        [{ name: "main", oid: "772eb2e", kind: "head", is_head: true, tip_ts: 5000, upstream: null }],
       ],
       [
         "6f21bf7",
@@ -1139,12 +1139,13 @@ describe("Property 15: foldableNodeIds eligibility over the confirmed chain", ()
             kind: "remotebranch",
             is_head: false,
             tip_ts: 4000,
+            upstream: null,
           },
         ],
       ],
       [
         "86bdb6f",
-        [{ name: "v1.0", oid: "86bdb6f", kind: "tag", is_head: false, tip_ts: 2000 }],
+        [{ name: "v1.0", oid: "86bdb6f", kind: "tag", is_head: false, tip_ts: 2000, upstream: null }],
       ],
     ]);
     return { nodes, edges, refsByOid };
@@ -1266,7 +1267,7 @@ describe("Property 15: foldableNodeIds eligibility over the confirmed chain", ()
     const refsByOid = new Map<string, RefLabel[]>([
       [
         "feat",
-        [{ name: "feat", oid: "feat", kind: "branch", is_head: false, tip_ts: 5000 }],
+        [{ name: "feat", oid: "feat", kind: "branch", is_head: false, tip_ts: 5000, upstream: null }],
       ],
     ]);
 

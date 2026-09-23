@@ -120,6 +120,8 @@ export interface RefLabel {
   kind: "branch" | "remotebranch" | "tag" | "head";
   is_head: boolean;
   tip_ts: number | null;
+  /** For local branches: short name of the configured upstream (e.g. "origin/main"). */
+  upstream: string | null;
 }
 
 export interface GraphResponse {

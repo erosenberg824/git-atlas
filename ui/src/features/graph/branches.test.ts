@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { branchesFromRefs, defaultVisibility, shownBranchNames } from "./branches";
+import { branchesFromRefs, defaultVisibility, shownBranchNames, nextVisibility } from "./branches";
 import type { RefLabel } from "../../api/client";
 
 const branch = (name: string, tip_ts: number, is_head = false): RefLabel => ({
@@ -8,6 +8,7 @@ const branch = (name: string, tip_ts: number, is_head = false): RefLabel => ({
   kind: "branch",
   is_head,
   tip_ts,
+  upstream: null,
 });
 
 describe("branchesFromRefs", () => {
@@ -15,7 +16,7 @@ describe("branchesFromRefs", () => {
     const refs: RefLabel[] = [
       branch("old", 1000),
       branch("new", 5000),
-      { name: "v1", oid: "t", kind: "tag", is_head: false, tip_ts: 9000 },
+      { name: "v1", oid: "t", kind: "tag", is_head: false, tip_ts: 9000, upstream: null },
       branch("mid", 3000),
     ];
     const bs = branchesFromRefs(refs);
@@ -60,5 +61,14 @@ describe("shownBranchNames", () => {
       ["c", "hidden"],
     ]);
     expect(shownBranchNames(vis).sort()).toEqual(["a", "b"]);
+  });
+});
+
+
+describe("nextVisibility", () => {
+  it("cycles expanded → collapsed → hidden → expanded", () => {
+    expect(nextVisibility("expanded")).toBe("collapsed");
+    expect(nextVisibility("collapsed")).toBe("hidden");
+    expect(nextVisibility("hidden")).toBe("expanded");
   });
 });

@@ -18,6 +18,8 @@ export interface BranchInfo {
   isHead: boolean;
   tipTs: number | null;
   remote: boolean;
+  /** For local branches: short name of the configured upstream (e.g. "origin/main"). */
+  upstream: string | null;
 }
 
 /** Extract branch refs (local + remote) from the ref list, newest tip first. */
@@ -30,9 +32,15 @@ export function branchesFromRefs(refs: RefLabel[]): BranchInfo[] {
       isHead: r.is_head,
       tipTs: r.tip_ts,
       remote: r.kind === "remotebranch",
+      upstream: r.upstream,
     }));
   branches.sort((a, b) => (b.tipTs ?? 0) - (a.tipTs ?? 0));
   return branches;
+}
+
+/** The tri-state cycle transition: expanded → collapsed → hidden → expanded. */
+export function nextVisibility(v: BranchVisibility): BranchVisibility {
+  return v === "expanded" ? "collapsed" : v === "collapsed" ? "hidden" : "expanded";
 }
 
 /**

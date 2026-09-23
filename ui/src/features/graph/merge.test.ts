@@ -448,7 +448,7 @@ function ref(
   kind: RefLabel["kind"],
   is_head = false,
 ): RefLabel {
-  return { name, oid, kind, is_head, tip_ts: null };
+  return { name, oid, kind, is_head, tip_ts: null, upstream: null };
 }
 
 describe("Property 4: Default-View Leaf-Tip", () => {

@@ -1,46 +1,146 @@
 import { useState } from "react";
-import { GitBranch, Eye, EyeOff, ChevronsDownUp, X } from "lucide-react";
+import { Eye, EyeOff, ChevronsDownUp, Minus, ChevronDown, ChevronRight } from "lucide-react";
 import type { BranchInfo, BranchVisibility } from "./branches";
+import { nextVisibility } from "./branches";
+import type { BranchGroup } from "./branchGroups";
+import { isPaired } from "./branchGroups";
 
 /**
- * Branch visibility control: lists branches with a tri-state per branch —
- * Hidden / Collapsed (virtual squash) / Expanded. Clicking a branch cycles it
- * Expanded → Collapsed → Hidden → Expanded. Drives server ref-scoping + rollups.
+ * Branch visibility control. Renders one row per branch group:
+ *  - A **paired** group (a local branch + its tracked remote) is collapsed by
+ *    default to a single row: the group state icon + the local name + a small
+ *    orange dot indicating a tracked remote exists. Clicking the row cycles
+ *    BOTH members in lockstep. A disclosure chevron expands the row in place to
+ *    reveal per-member controls (local + remote) for independent toggling.
+ *  - A **singleton** group shows a single name + a single control.
+ *
+ * Each control cycles the tri-state Expanded → Collapsed → Hidden. The panel
+ * accordions down from the "Branches" toggle button (positioned by the parent);
+ * closing is handled by that button, so there's no in-panel header/close.
  */
 export default function BranchControl({
-  branches,
+  groups,
   visibility,
   onCycle,
-  onClose,
+  onCycleGroup,
 }: {
-  branches: BranchInfo[];
+  groups: BranchGroup[];
   visibility: Map<string, BranchVisibility>;
   onCycle: (name: string) => void;
-  onClose: () => void;
+  onCycleGroup: (names: string[]) => void;
 }) {
   const [filter, setFilter] = useState("");
-  const shown = branches.filter((b) =>
-    b.name.toLowerCase().includes(filter.toLowerCase()),
+  // Which paired groups (keyed by local branch name) are expanded to show their
+  // per-member controls. Collapsed by default — the common case is lockstep.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleExpanded = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  const q = filter.toLowerCase();
+  const shown = groups.filter((g) =>
+    g.members.some((m) => m.toLowerCase().includes(q)),
   );
 
-  const icon = (v: BranchVisibility) =>
-    v === "expanded" ? (
-      <Eye size={13} className="text-emerald-400" />
-    ) : v === "collapsed" ? (
-      <ChevronsDownUp size={13} className="text-purple-300" />
-    ) : (
-      <EyeOff size={13} className="text-[#6e7681]" />
+  // Each state's glyph, centered in a fixed-size box so every row's icon
+  // occupies the same footprint — names line up (no "wavy" left edge) and the
+  // thinner collapse chevron reads at parity with the eye glyphs.
+  const icon = (v: BranchVisibility) => (
+    <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
+      {v === "expanded" ? (
+        <Eye size={13} className="text-emerald-400" />
+      ) : v === "collapsed" ? (
+        <ChevronsDownUp size={14} className="text-purple-300" />
+      ) : (
+        <EyeOff size={13} className="text-[#6e7681]" />
+      )}
+    </span>
+  );
+
+  /** The verb for the action that lands the branch in state `v`. */
+  const actionVerb = (v: BranchVisibility) =>
+    v === "expanded" ? "expand" : v === "collapsed" ? "collapse" : "hide";
+
+  /**
+   * Custom hover tooltip (native `title` is slow and unstyled). Shows the full
+   * branch name prominently, with the next action (target icon + verb) on a
+   * separate, muted line. Appears instantly on hover via `group-hover`; the
+   * parent button must be `group relative`.
+   */
+  const tooltip = (name: string, v: BranchVisibility) => {
+    const next = nextVisibility(v);
+    return (
+      <span className="pointer-events-none absolute left-0 top-full mt-1 z-30 flex flex-col gap-1 rounded border border-[#30363d] bg-[#0d1117] px-2 py-1.5 opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
+        <span className="font-mono whitespace-nowrap text-[#e6edf3]">{name}</span>
+        <span className="flex items-center gap-1 whitespace-nowrap text-[10px] text-[#8b949e]">
+          click to {actionVerb(next)}
+          {icon(next)}
+        </span>
+      </span>
     );
+  };
+
+  /**
+   * A generic styled hover tooltip matching the row tooltip's look, for
+   * elements that aren't branch-state controls (e.g. the remote pill). Two
+   * lines: a prominent primary line and a muted secondary hint.
+   *
+   * Positioned against the full-width row (`group/row`) rather than the narrow
+   * pill, so it can use the panel's width: centered, but inset from both edges
+   * (`left-2 right-2`) so it never overruns the panel and wraps naturally
+   * within that space instead of being forced skinny.
+   */
+  const pillTooltip = (primary: string, hint: string) => (
+    <span className="pointer-events-none absolute left-2 right-2 top-full z-30 mt-1 flex flex-col gap-1 rounded border border-[#30363d] bg-[#0d1117] px-2 py-1.5 opacity-0 shadow-lg transition-opacity peer-hover/pill:opacity-100">
+      <span className="font-mono break-words text-[#e6edf3]">{primary}</span>
+      <span className="text-[10px] text-[#8b949e]">{hint}</span>
+    </span>
+  );
+
+  /**
+   * A single per-member control (icon + name), cycling that branch alone.
+   * `label` overrides the displayed text (used to shorten a redundant remote
+   * name to just its remote prefix); the full name still shows in the tooltip.
+   */
+  const memberButton = (b: BranchInfo, label?: string) => {
+    const v = visibility.get(b.name) ?? "hidden";
+    return (
+      <button
+        key={b.name}
+        onClick={() => onCycle(b.name)}
+        className="group relative flex items-center gap-1.5 min-w-0 w-full px-1.5 py-0.5 rounded hover:bg-[#30363d] text-left"
+      >
+        {icon(v)}
+        <span
+          className={[
+            "font-mono truncate flex-1",
+            v === "hidden" ? "text-[#6e7681]" : "text-[#e6edf3]",
+          ].join(" ")}
+        >
+          {b.isHead ? "● " : ""}
+          {label ?? b.name}
+        </span>
+        {tooltip(b.name, v)}
+      </button>
+    );
+  };
+
+  /**
+   * Shorten a remote name that just mirrors the local one: `origin/main`
+   * paired with local `main` → `origin`. Any other remote name is unchanged.
+   */
+  const remoteLabel = (remoteName: string, localName: string) => {
+    const slash = remoteName.lastIndexOf("/");
+    if (slash > 0 && remoteName.slice(slash + 1) === localName) {
+      return remoteName.slice(0, slash);
+    }
+    return remoteName;
+  };
 
   return (
-    <div className="absolute top-2 right-2 z-20 w-64 max-h-[70%] flex flex-col rounded-md border border-[#30363d] bg-[#161b22] shadow-lg text-xs">
-      <div className="flex items-center gap-2 px-3 h-8 border-b border-[#30363d] shrink-0">
-        <GitBranch size={13} className="text-blue-400" />
-        <span className="font-semibold text-[#e6edf3]">Branches</span>
-        <button onClick={onClose} className="ml-auto text-[#8b949e] hover:text-[#e6edf3]" title="Close">
-          <X size={13} />
-        </button>
-      </div>
+    <div className="w-[32rem] max-h-[70%] flex flex-col rounded-md border border-[#30363d] bg-[#161b22] shadow-lg text-xs">
       <input
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
@@ -48,25 +148,119 @@ export default function BranchControl({
         className="m-2 px-2 py-1 bg-[#0d1117] border border-[#30363d] rounded text-[#e6edf3] placeholder:text-[#6e7681] outline-none focus:border-blue-500/60"
       />
       <div className="overflow-auto px-1 pb-2">
-        {shown.map((b) => {
+        {shown.map((g) => {
+          if (isPaired(g) && g.local) {
+            // Collapsed by default: one row for the local branch, with a group
+            // state icon (the members' shared state, or a "mixed" marker when
+            // they've diverged) and an orange remote pill sitting right after
+            // the name. The pill shows the remote count when >1 plus an
+            // expand/collapse chevron, and IS the disclosure control — clicking
+            // it expands per-member rows (local + each remote) in place for
+            // independent toggling. When open, the children get a connecting
+            // left rule so parent and members read as one unit. Clicking the
+            // icon or name cycles ALL members together (the common case).
+            const local = g.local;
+            const remotes = g.remotes;
+            const lv = visibility.get(local.name) ?? "hidden";
+            const states = g.members.map((m) => visibility.get(m) ?? "hidden");
+            const mixed = states.some((s) => s !== states[0]);
+            const allHidden = states.every((s) => s === "hidden");
+            const isOpen = expanded.has(local.name);
+            const remoteNames = remotes.map((r) => r.name).join(", ");
+            return (
+              <div key={local.name} className="rounded">
+                <div className="relative flex items-center gap-0.5 px-1 py-1">
+                  <button
+                    onClick={() => onCycleGroup(g.members)}
+                    className="group relative shrink-0 p-1 rounded hover:bg-[#21262d]"
+                  >
+                    {mixed ? (
+                      <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-[#8b949e]">
+                        <Minus size={13} />
+                      </span>
+                    ) : (
+                      icon(lv)
+                    )}
+                    {tooltip(`${local.name} + ${remoteNames}`, lv)}
+                  </button>
+                  <button
+                    onClick={() => onCycleGroup(g.members)}
+                    className="group relative flex min-w-0 items-center gap-1.5 px-1 py-0.5 rounded hover:bg-[#30363d] text-left"
+                  >
+                    <span
+                      className={[
+                        "font-mono truncate",
+                        allHidden ? "text-[#6e7681]" : "text-[#e6edf3]",
+                      ].join(" ")}
+                    >
+                      {local.isHead ? "● " : ""}
+                      {local.name}
+                    </span>
+                    {tooltip(`${local.name} + ${remoteNames}`, lv)}
+                  </button>
+                  <button
+                    onClick={() => toggleExpanded(local.name)}
+                    className={[
+                      "peer/pill relative ml-1 shrink-0 inline-flex h-4 items-center justify-center gap-0.5 rounded-full pl-1.5 pr-1",
+                      "bg-orange-500/25 text-orange-300 ring-1 ring-orange-700/50",
+                      "text-[10px] font-medium leading-none hover:bg-orange-500/40",
+                    ].join(" ")}
+                    aria-expanded={isOpen}
+                  >
+                    <span className="inline-flex w-2 justify-center tabular-nums">
+                      {remotes.length}
+                    </span>
+                    {isOpen ? (
+                      <ChevronDown size={11} className="shrink-0" />
+                    ) : (
+                      <ChevronRight size={11} className="shrink-0" />
+                    )}
+                  </button>
+                  {/* spacer keeps the row full-width so it aligns with others */}
+                  <div className="flex-1" />
+                  {/* Pill tooltip lives at row level (full panel width) but is
+                      triggered by pill hover via the `group/pill` scope, so it
+                      can spread across the panel instead of being cramped by
+                      the narrow pill. Inset from both edges so it never
+                      overruns. */}
+                  {pillTooltip(
+                    remoteNames,
+                    `${remotes.length} remote-tracking branch${remotes.length > 1 ? "es" : ""} — click to ${isOpen ? "hide" : "view"}`,
+                  )}
+                </div>
+                {isOpen && (
+                  <div className="ml-3 mr-3 flex min-w-0 flex-col gap-0.5 rounded border border-l-2 border-[#30363d] border-l-[#6e7681] bg-[#1c2128] pb-1 pl-3 pr-1 pt-1">
+                    {memberButton(local)}
+                    {remotes.map((r) => memberButton(r, remoteLabel(r.name, local.name)))}
+                  </div>
+                )}
+              </div>
+            );
+          }
+          // Singleton — a lone local branch or bare remote-tracking branch. The
+          // branch's own state icon sits in the group column (where paired rows
+          // put their group control); the name left-justifies in the member
+          // area, aligned with paired members.
+          const b = g.local ?? g.remotes[0];
+          if (!b) return null;
           const v = visibility.get(b.name) ?? "hidden";
           return (
             <button
               key={b.name}
               onClick={() => onCycle(b.name)}
-              className="w-full flex items-center gap-2 px-2 py-1 rounded hover:bg-[#21262d] text-left"
-              title={`${v} — click to cycle (expanded → collapsed → hidden)`}
+              className="group relative flex w-full items-center gap-1 px-1 py-1 rounded hover:bg-[#21262d] text-left"
             >
-              {icon(v)}
+              <span className="shrink-0 p-1">{icon(v)}</span>
               <span
                 className={[
-                  "font-mono truncate",
+                  "font-mono truncate flex-1 px-1.5",
                   v === "hidden" ? "text-[#6e7681]" : "text-[#e6edf3]",
                 ].join(" ")}
               >
                 {b.isHead ? "● " : ""}
                 {b.name}
               </span>
+              {tooltip(b.name, v)}
             </button>
           );
         })}

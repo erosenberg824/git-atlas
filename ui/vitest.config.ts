@@ -31,6 +31,7 @@ export default defineConfig({
       include: [
         "src/features/graph/collapse.ts",
         "src/features/graph/branches.ts",
+        "src/features/graph/branchGroups.ts",
         "src/features/graph/refBadge.ts",
         "src/features/tree/fileTree.ts",
       ],
