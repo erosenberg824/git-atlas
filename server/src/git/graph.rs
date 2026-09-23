@@ -128,11 +128,17 @@ pub fn build_graph(
                 hidden_count: 0,
             });
         }
-        // Seed the walk from ALL refs (local + remote branches, tags, HEAD) so
-        // the graph includes commits reachable from any ref — not just those on
-        // the current HEAD. Without this, e.g. freshly fetched remote branches
-        // would collect ref labels but have no commit nodes to attach to.
-        revwalk.push_glob("refs/*").map_err(AppError::Git)?;
+        // Seed the walk from all BRANCH/TAG refs (local + remote branches,
+        // tags, HEAD) so the graph includes commits reachable from any real ref
+        // — not just those on the current HEAD. Without this, e.g. freshly
+        // fetched remote branches would collect ref labels but have no commit
+        // nodes to attach to. We deliberately do NOT use the catch-all
+        // `refs/*`: that also walks `refs/stash`, dragging each stash's internal
+        // commit objects (the stash commit + its `index on …` / untracked
+        // parents) into the node set as spurious children of the commit the
+        // stash was created on. Stashes are surfaced separately (via /status +
+        // the per-commit stash badge), so they must not appear as graph nodes.
+        push_branch_and_tag_refs(&mut revwalk)?;
     }
 
     let mut nodes = Vec::new();
@@ -256,7 +262,10 @@ pub fn time_bounds(repo: &Repository) -> Result<TimeBounds, AppError> {
         return Ok(TimeBounds { newest_ts: None, oldest_ts: None, count: 0 });
     }
     let mut revwalk = repo.revwalk().map_err(AppError::Git)?;
-    revwalk.push_glob("refs/*").map_err(AppError::Git)?;
+    // Same ref scope as build_graph: branch/tag refs only, NOT `refs/*` — the
+    // catch-all would pull stash internal commits into the count, inflating the
+    // time bounds with commits the graph never renders.
+    push_branch_and_tag_refs(&mut revwalk)?;
 
     let mut newest: Option<i64> = None;
     let mut oldest: Option<i64> = None;
@@ -269,6 +278,34 @@ pub fn time_bounds(repo: &Repository) -> Result<TimeBounds, AppError> {
         count += 1;
     }
     Ok(TimeBounds { newest_ts: newest, oldest_ts: oldest, count })
+}
+
+/// Seed a revwalk from every real branch/tag ref — local branches
+/// (`refs/heads/*`), remote branches (`refs/remotes/*`), and tags
+/// (`refs/tags/*`) — plus HEAD. This is the ref scope the graph renders.
+///
+/// Deliberately narrower than `push_glob("refs/*")`: the catch-all also matches
+/// `refs/stash`, whose walk drags in the stash's internal commit objects (the
+/// stash commit itself and its `index on …` / untracked-tree parents). Those
+/// would render as spurious extra children hanging off the commit each stash
+/// was created on. Stashes are surfaced separately (via `/status` + the
+/// per-commit stash badge in the UI), so they must be excluded here. Any other
+/// non-branch/tag internal ref (e.g. `refs/notes/*`, `refs/bisect/*`) is
+/// likewise excluded for the same reason.
+///
+/// Missing globs are ignored: a repo with, say, no tags simply has nothing to
+/// push for `refs/tags/*`, which is not an error.
+fn push_branch_and_tag_refs(revwalk: &mut git2::Revwalk) -> Result<(), AppError> {
+    for glob in ["refs/heads/*", "refs/remotes/*", "refs/tags/*"] {
+        // A glob that matches nothing yields no error from libgit2; only a real
+        // failure (e.g. a corrupt ref db) propagates.
+        let _ = revwalk.push_glob(glob);
+    }
+    // HEAD may be detached (pointing at a commit not under any of the globs
+    // above), so push it explicitly. Ignore the error on an unborn HEAD — the
+    // callers already handle the empty-repo case before reaching here.
+    let _ = revwalk.push_head();
+    Ok(())
 }
 
 /// Collect all local branches, remote branches, and tags with their target OIDs.
@@ -604,6 +641,67 @@ mod tests {
         assert_eq!(g.before_count, 2, "c1,c2");
         assert_eq!(g.after_count, 2, "c9,c10");
         assert_eq!(g.hidden_count, 4, "in-window commits past the limit");
+        cleanup(dir);
+    }
+
+    #[test]
+    fn stash_commits_excluded_from_graph() {
+        // A git stash is stored as commit objects under `refs/stash` (the stash
+        // commit + its internal `index on …` and possibly untracked-tree
+        // parents). Seeding the revwalk from `refs/*` would pull those into the
+        // node set as spurious extra children of the commit the stash was
+        // created on. We seed from branch/tag refs only, so they must NOT appear.
+        let (mut repo, dir) = temp_repo();
+        let base = commit(&repo, "base", 1000);
+        commit(&repo, "tip", 2000);
+
+        // Create a stash: dirty the working tree, then stash it.
+        let workdir = repo.workdir().unwrap().to_path_buf();
+        std::fs::write(workdir.join("f.txt"), "dirty change\n").unwrap();
+        let sig = Signature::new("t", "t@t.co", &Time::new(3000, 0)).unwrap();
+        repo.stash_save2(&sig, Some("test stash"), None).unwrap();
+
+        // Sanity: the stash ref really exists (so the test is meaningful).
+        assert!(
+            repo.find_reference("refs/stash").is_ok(),
+            "expected a refs/stash to have been created"
+        );
+
+        let g = build_graph(&repo, None, 500, None, None, None).unwrap();
+
+        // Only the two real commits are nodes — no stash/index commit leaked in.
+        let summaries: Vec<&str> = g.nodes.iter().map(|n| n.summary.as_str()).collect();
+        assert_eq!(g.nodes.len(), 2, "only real commits, got {summaries:?}");
+
+        // The stash commit and its index parent must be absent from the graph.
+        let stash_oid = repo
+            .find_reference("refs/stash")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        let node_oids: Vec<&str> = g.nodes.iter().map(|n| n.oid.as_str()).collect();
+        assert!(
+            !node_oids.contains(&stash_oid.as_str()),
+            "stash commit {stash_oid} must not be a graph node; nodes = {node_oids:?}"
+        );
+
+        // The base commit keeps exactly its real children (here: only "tip"),
+        // with no extra edges introduced by the stash's internal parents.
+        let base_str = base.to_string();
+        let children_of_base: Vec<&str> = g
+            .edges
+            .iter()
+            .filter(|e| e.source == base_str)
+            .map(|e| e.target.as_str())
+            .collect();
+        assert_eq!(
+            children_of_base.len(),
+            1,
+            "base should have exactly one real child (tip), got {children_of_base:?}"
+        );
+
         cleanup(dir);
     }
 }
