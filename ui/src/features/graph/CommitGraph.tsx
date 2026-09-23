@@ -4,7 +4,6 @@ import {
   Background,
   Controls,
   MiniMap,
-  Panel,
   useNodesState,
   useEdgesState,
   type Node,
@@ -52,6 +51,12 @@ interface CommitGraphProps {
   jumpToOid?: string | null;
   /** Called once a jump has been handled, so the parent can clear it. */
   onJumpConsumed?: () => void;
+  /**
+   * Merge-fold view mode, lifted to App.tsx so the "Collapse merged branches"
+   * switch can live in the left scope overlay. `"active"` folds merged
+   * side-branches behind their merge nodes; `"full"` expands the whole DAG.
+   */
+  viewMode?: ViewMode;
 }
 
 /** Synthetic node id for the working-tree (working + staged) pseudo-node. */
@@ -234,6 +239,7 @@ export default function CommitGraph({
   onSelectCommit,
   jumpToOid,
   onJumpConsumed,
+  viewMode = "active",
 }: CommitGraphProps) {
   const refsByOid = useMemo(() => {
     const map = new Map<string, RefLabel[]>();
@@ -269,7 +275,8 @@ export default function CommitGraph({
   //   effectiveFolded = (regionSeed ∪ activeMergeSeed ∪ userCollapsed) \ userExpanded
   // A manual expand authoritatively wins over the seed and over a manual
   // collapse, so the fold→expand→collapse round-trip stays reversible (Defect 4).
-  const [viewMode, setViewMode] = useState<ViewMode>("active");
+  // NOTE: `viewMode` is now a prop (lifted to App.tsx) so the "Collapse merged
+  // branches" switch can live in the left scope overlay.
   const [userCollapsed, setUserCollapsed] = useState<Set<string>>(new Set());
   const [userExpanded, setUserExpanded] = useState<Set<string>>(new Set());
 
@@ -865,17 +872,6 @@ export default function CommitGraph({
     [onSelectCommit, expandRegion, runNodes]
   );
 
-  // Jump to the top of the graph (newest commit) — panning a tall graph to the
-  // top by hand is tedious. Centers the first rendered node near the top.
-  const jumpToTop = useCallback(() => {
-    const topId = renderOrder[0];
-    if (!topId) return;
-    const x = X_BASE + (lanes.get(topId) ?? 0) * LANE_WIDTH + 90;
-    const y = Y_BASE + 40;
-    rfRef.current?.setCenter(x, y, { zoom: 0.8, duration: 400 });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [renderOrder, lanes]);
-
   return (
     <div className="w-full h-full">
       <ReactFlow
@@ -904,47 +900,6 @@ export default function CommitGraph({
           color="#21262d"
         />
         <Controls />
-        <Panel position="top-right" className="!mt-2 !mr-2 flex gap-2">
-          <div
-            className="inline-flex rounded overflow-hidden border border-[#30363d]"
-            role="group"
-            aria-label="Graph view mode"
-          >
-            <button
-              onClick={() => setViewMode("active")}
-              aria-pressed={viewMode === "active"}
-              className={
-                "px-2 py-1 text-xs " +
-                (viewMode === "active"
-                  ? "bg-[#1f6feb] text-white"
-                  : "bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3]")
-              }
-              title="Show only active/un-merged lines; fold merged branches behind their merge nodes"
-            >
-              Active lines only
-            </button>
-            <button
-              onClick={() => setViewMode("full")}
-              aria-pressed={viewMode === "full"}
-              className={
-                "px-2 py-1 text-xs border-l border-[#30363d] " +
-                (viewMode === "full"
-                  ? "bg-[#1f6feb] text-white"
-                  : "bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3]")
-              }
-              title="Show the full DAG with merged branches expanded by default"
-            >
-              Full DAG
-            </button>
-          </div>
-          <button
-            onClick={jumpToTop}
-            className="px-2 py-1 text-xs rounded bg-[#161b22] border border-[#30363d] text-[#8b949e] hover:text-[#e6edf3] hover:border-[#58a6ff]/50"
-            title="Jump to the newest commit (top of the graph)"
-          >
-            ↑ Top
-          </button>
-        </Panel>
         <MiniMap
           pannable
           zoomable

@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { GitBranch, Search, FolderOpen, Loader2, AlertCircle, GitCommit } from "lucide-react";
+import { useState, useEffect, useCallback, useRef, useTransition } from "react";
+import { GitBranch, Search, FolderOpen, Loader2, AlertCircle, GitCommit, GitMerge } from "lucide-react";
 import { api, GRAPH_NODE_LIMIT, type GraphResponse, type TreeResponse, type StatusSummary } from "./api/client";
 import { isTauri, pickDirectory, onFolderDrop } from "./lib/tauri";
 import { useLiveUpdates } from "./lib/useLiveUpdates";
@@ -18,6 +18,9 @@ import {
 } from "./features/graph/branches";
 import { groupBranches } from "./features/graph/branchGroups";
 import BranchControl from "./features/graph/BranchControl";
+import { controlButtonClass } from "./features/graph/controlStyles";
+import ToggleSwitch from "./features/graph/ToggleSwitch";
+import type { ViewMode } from "./features/graph/collapse";
 import FindRefBox from "./features/graph/FindRefBox";
 import WindowBanner from "./features/graph/WindowBanner";
 import CommitPanel from "./features/commit/CommitPanel";
@@ -53,6 +56,26 @@ export default function App() {
   // default when a repo's refs first load; drives server ref-scoping + rollups.
   const [branchVis, setBranchVis] = useState<Map<string, BranchVisibility>>(new Map());
   const [showBranchControl, setShowBranchControl] = useState(false);
+  // Merge-fold view mode. "active" folds merged side-branches behind their merge
+  // nodes (the default); "full" expands the whole DAG. Lifted here so the
+  // "Collapse merged branches" switch can live in the left scope overlay.
+  const [viewMode, setViewMode] = useState<ViewMode>("active");
+  // The switch reads this, NOT viewMode. Flipping viewMode drives the graph's
+  // O(N+E) re-layout; if the switch's checked state were `viewMode === "active"`
+  // it couldn't paint until that deferred work committed, so the track color
+  // lagged the click. `switchOn` is urgent local state that flips instantly on
+  // click; the heavy viewMode change is then dispatched in a transition. It's
+  // kept in sync below so any external viewMode change still reflects.
+  const [switchOn, setSwitchOn] = useState(true);
+  // Flipping viewMode re-composes the fold set and re-runs the graph's O(N+E)
+  // layout; running it in a transition keeps the click responsive and lets the
+  // switch paint first. `viewModePending` exposes the in-flight state.
+  const [viewModePending, startViewModeTransition] = useTransition();
+  // Reconcile the instant switch state if viewMode is changed by anything other
+  // than the switch itself (keeps them from drifting).
+  useEffect(() => {
+    setSwitchOn(viewMode === "active");
+  }, [viewMode]);
   // Find/jump: the oid the user wants to center/highlight (consumed by CommitGraph).
   const [jumpToOid, setJumpToOid] = useState<string | null>(null);
 
@@ -472,31 +495,44 @@ export default function App() {
                 The branch panel accordions down directly under the Branches
                 button (same left-anchored column). */}
             {graph && (
-              <div className="absolute top-2 left-2 z-20 flex items-start gap-2">
-                <FindRefBox refs={graph.refs} onJump={(oid) => setJumpToOid(oid)} />
-                <div className="flex flex-col gap-1">
+              <div className="absolute top-2 left-2 z-30 flex flex-col gap-1">
+                {/* Backing surface: a semi-opaque, blurred panel behind the top
+                    control row so graph nodes/dots don't shine through the gaps
+                    between buttons. The Branches accordion sits BELOW this and
+                    keeps its own panel styling. */}
+                <div className="flex items-center gap-2 rounded-md bg-[#161b22] p-1">
+                  <FindRefBox refs={graph.refs} onJump={(oid) => setJumpToOid(oid)} />
                   <button
                     onClick={() => setShowBranchControl((s) => !s)}
-                    className={[
-                      "self-start flex items-center gap-1 px-2 py-1 text-xs border rounded-md transition-colors",
-                      showBranchControl
-                        ? "text-[#e6edf3] border-[#58a6ff] bg-[#1f6feb]/35 shadow-inner"
-                        : "text-[#8b949e] hover:text-[#e6edf3] border-[#30363d] bg-[#161b22] hover:border-[#58a6ff]/50",
-                    ].join(" ")}
+                    className={controlButtonClass(showBranchControl)}
                     title="Show/hide branches"
                   >
                     <GitBranch size={12} />
                     Branches
                   </button>
-                  {showBranchControl && (
-                    <BranchControl
-                      groups={groupBranches(branchesFromRefs(graph.refs))}
-                      visibility={branchVis}
-                      onCycle={cycleBranch}
-                      onCycleGroup={cycleBranches}
-                    />
-                  )}
+                  <ToggleSwitch
+                    checked={switchOn}
+                    pending={viewModePending}
+                    onChange={(on) => {
+                      setSwitchOn(on); // urgent: paints the switch immediately
+                      startViewModeTransition(() =>
+                        setViewMode(on ? "active" : "full"),
+                      );
+                    }}
+                    title="Fold merged side-branches behind their merge nodes. Off shows the full DAG with every branch expanded."
+                  >
+                    <GitMerge size={12} />
+                    Collapse merged branches
+                  </ToggleSwitch>
                 </div>
+                {showBranchControl && (
+                  <BranchControl
+                    groups={groupBranches(branchesFromRefs(graph.refs))}
+                    visibility={branchVis}
+                    onCycle={cycleBranch}
+                    onCycleGroup={cycleBranches}
+                  />
+                )}
               </div>
             )}
             {graphLoading ? (
@@ -518,6 +554,7 @@ export default function App() {
                 branchVisibility={branchVis}
                 jumpToOid={jumpToOid}
                 onJumpConsumed={() => setJumpToOid(null)}
+                viewMode={viewMode}
               />
             ) : null}
             </div>

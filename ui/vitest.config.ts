@@ -33,6 +33,7 @@ export default defineConfig({
         "src/features/graph/branches.ts",
         "src/features/graph/branchGroups.ts",
         "src/features/graph/refBadge.ts",
+        "src/features/graph/controlStyles.ts",
         "src/features/tree/fileTree.ts",
       ],
     },
