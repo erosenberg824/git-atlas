@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -41,6 +42,15 @@ export interface TooltipProps {
   children: ReactNode;
   /** Extra classes for the trigger wrapper (layout only). */
   className?: string;
+  /**
+   * Make the popup itself hoverable/clickable. By default the popup is
+   * `pointer-events-none` (a passive hint) and closes as soon as the pointer
+   * leaves the trigger. When `interactive` is set the popup accepts pointer
+   * events and stays open while the pointer is over EITHER the trigger or the
+   * popup — so it can hold clickable content (e.g. a per-stash picker). A short
+   * close grace period bridges the gap between the two elements.
+   */
+  interactive?: boolean;
 }
 
 export default function Tooltip({
@@ -50,11 +60,15 @@ export default function Tooltip({
   placement = "bottom",
   children,
   className,
+  interactive = false,
 }: TooltipProps) {
   const triggerRef = useRef<HTMLSpanElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<Position | null>(null);
+  // Grace timer so an interactive popup doesn't close in the gap between the
+  // trigger and the popup as the pointer travels between them.
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Measure after paint so we know the tooltip's real size, then clamp it into
   // the viewport (the pure math lives in `computeTooltipPosition`). Runs while
@@ -77,20 +91,43 @@ export default function Tooltip({
     );
   }, [open, placement, primary, secondary]);
 
-  const show = useCallback(() => setOpen(true), []);
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  }, []);
+
+  // Clear any pending close timer on unmount.
+  useEffect(() => clearCloseTimer, [clearCloseTimer]);
+
+  const show = useCallback(() => {
+    clearCloseTimer();
+    setOpen(true);
+  }, [clearCloseTimer]);
   const hide = useCallback(() => {
     setOpen(false);
     setPos(null);
   }, []);
+  // For interactive popups, defer the close briefly so the pointer can cross
+  // the gap onto the popup (which cancels the timer via its own onMouseEnter).
+  const requestHide = useCallback(() => {
+    if (!interactive) {
+      hide();
+      return;
+    }
+    clearCloseTimer();
+    closeTimer.current = setTimeout(hide, 120);
+  }, [interactive, hide, clearCloseTimer]);
 
   return (
     <span
       ref={triggerRef}
       className={["inline-flex", className].filter(Boolean).join(" ")}
       onMouseEnter={show}
-      onMouseLeave={hide}
+      onMouseLeave={requestHide}
       onFocus={show}
-      onBlur={hide}
+      onBlur={requestHide}
     >
       {children}
       {open &&
@@ -98,7 +135,12 @@ export default function Tooltip({
           <div
             ref={tipRef}
             role="tooltip"
-            className="pointer-events-none fixed z-50 flex max-w-xs flex-col gap-1 rounded border border-[#30363d] bg-[#0d1117] px-2 py-1.5 text-xs shadow-lg"
+            onMouseEnter={interactive ? show : undefined}
+            onMouseLeave={interactive ? requestHide : undefined}
+            className={[
+              "fixed z-50 flex max-w-xs flex-col gap-1 rounded border border-[#30363d] bg-[#0d1117] px-2 py-1.5 text-xs shadow-lg",
+              interactive ? "pointer-events-auto" : "pointer-events-none",
+            ].join(" ")}
             style={{
               left: pos?.left ?? -9999,
               top: pos?.top ?? -9999,

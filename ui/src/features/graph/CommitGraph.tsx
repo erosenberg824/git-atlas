@@ -615,6 +615,53 @@ export default function CommitGraph({
     return m;
   }, [renderOrder]);
 
+  // ── Stash badges ──────────────────────────────────────────────────────────
+  // A stash is not a ref pointing at a commit; it's a set of changes layered on
+  // top of the commit it was created on (its first parent = `base_oid`). So we
+  // DON'T float a node in its own lane — that reads as clutter "just hanging
+  // around". Instead each base commit gets a compact stash badge; CLICKING it
+  // SELECTS the stash (its synthetic `__stash__<index>` id), which drives the
+  // existing StashPanel diff in the right pane and shades the base commit as the
+  // active context. No node is ever minted for a based stash. Stashes whose base
+  // is off-window have no badge host, so they still render as a node (orphans)
+  // so they're never lost.
+
+  // Stashes grouped by the in-window base commit they were created on. Drives
+  // the compact per-commit stash badge.
+  const stashesByBase = useMemo(() => {
+    const m = new Map<string, import("../../api/client").StashEntry[]>();
+    if (!status) return m;
+    for (const stash of status.stashes) {
+      if (stash.base_oid && indexByOid.has(stash.base_oid)) {
+        if (!m.has(stash.base_oid)) m.set(stash.base_oid, []);
+        m.get(stash.base_oid)!.push(stash);
+      }
+    }
+    return m;
+  }, [status, indexByOid]);
+
+  // Stashes whose base is NOT in the loaded window: no badge host → render as a
+  // node so they stay visible.
+  const orphanStashIndices = useMemo(() => {
+    const s = new Set<number>();
+    if (!status) return s;
+    for (const stash of status.stashes) {
+      if (!stash.base_oid || !indexByOid.has(stash.base_oid)) s.add(stash.index);
+    }
+    return s;
+  }, [status, indexByOid]);
+
+  // Only orphan stashes render as a node — based stashes live purely as a badge
+  // on their base commit and are opened via the right-pane StashPanel.
+  const visibleStashIndices = orphanStashIndices;
+
+  // The stash index currently selected (its `__stash__<index>` node is the
+  // selection), or null. Used to shade its base commit's badge as active.
+  const selectedStashIndex = useMemo(
+    () => (selectedOid && isStashId(selectedOid) ? stashIndexFromId(selectedOid) : null),
+    [selectedOid],
+  );
+
   const flowNodes: Node[] = useMemo(
     () =>
       renderOrder.map((id, index) => {
@@ -658,12 +705,19 @@ export default function CommitGraph({
             // non-empty hide set → no affordance rendered).
             hiddenGroups,
             onTogglePath,
+            // Compact stash badge: the stashes based on THIS commit, and
+            // whether one of them is the current selection (so the badge shades
+            // as active). Clicking selects a stash → drives the StashPanel diff.
+            // Empty array → no badge rendered.
+            stashes: stashesByBase.get(id) ?? [],
+            selectedStashIndex,
+            onSelectStash: (index: number) => onSelectCommit(stashNodeId(index)),
           },
           selected: id === selectedOid,
         } as Node;
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [renderOrder, lanes, refsByOid, selectedOid, onSelectCommit, runNodes, nodeByOid, effEdges, regionEligible, onCollapseNode, expandRegion, resolved.affordancesByMerge, onTogglePath]
+    [renderOrder, lanes, refsByOid, selectedOid, onSelectCommit, runNodes, nodeByOid, effEdges, regionEligible, onCollapseNode, expandRegion, resolved.affordancesByMerge, onTogglePath, stashesByBase, selectedStashIndex]
   );
 
   // Working-tree pseudo-node placement (shared by the node and its edge). It
@@ -695,14 +749,17 @@ export default function CommitGraph({
     if (workingPlacement) {
       reserved.add(`${workingPlacement.lane},${workingPlacement.row}`);
     }
+    // Only VISIBLE stashes (expanded or orphaned) claim a cell — collapsed
+    // stashes live as a badge on their base commit and take no lane.
     status.stashes.forEach((stash) => {
+      if (!visibleStashIndices.has(stash.index)) return;
       const base = stash.base_oid && indexByOid.has(stash.base_oid)
         ? stash.base_oid
         : null;
       map.set(stash.index, placeAboveBase(base, indexByOid, lanes, reserved));
     });
     return map;
-  }, [status, workingPlacement, indexByOid, lanes]);
+  }, [status, workingPlacement, indexByOid, lanes, visibleStashIndices]);
 
   // Working-tree pseudo-node (working + staged) + one node per stash.
   const specialNodes: Node[] = useMemo(() => {
@@ -732,10 +789,12 @@ export default function CommitGraph({
       });
     }
 
-    // Stash nodes: anchored one row ABOVE their base commit (like the working
-    // node above HEAD), in a collision-free lane. Falls back to a far-right
-    // column near the top when the base isn't in the loaded window.
+    // Stash nodes: only ORPHAN stashes (their base is off-window, so there's no
+    // badge host commit to attach to). Based stashes never mint a node — they
+    // live as a badge on their base commit. With no in-window base an orphan
+    // falls back to a far-right column near the top.
     status.stashes.forEach((stash) => {
+      if (!visibleStashIndices.has(stash.index)) return;
       const placement = stashPlacements.get(stash.index);
       const id = stashNodeId(stash.index);
       const pos = placement
@@ -759,7 +818,7 @@ export default function CommitGraph({
 
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, workingPlacement, stashPlacements, indexByOid, lanes, selectedOid, onSelectCommit]);
+  }, [status, workingPlacement, stashPlacements, visibleStashIndices, indexByOid, lanes, selectedOid, onSelectCommit]);
 
   const flowEdges: Edge[] = useMemo(
     () =>
@@ -833,6 +892,8 @@ export default function CommitGraph({
     }
 
     status.stashes.forEach((stash) => {
+      // Only draw the edge when this stash is actually shown as a node.
+      if (!visibleStashIndices.has(stash.index)) return;
       if (stash.base_oid && indexByOid.has(stash.base_oid)) {
         const id = stashNodeId(stash.index);
         // Arrow points base → stash, matching the HEAD → working direction: the
@@ -856,7 +917,7 @@ export default function CommitGraph({
     });
 
     return out;
-  }, [status, headOid, indexByOid, workingPlacement, stashPlacements]);
+  }, [status, headOid, indexByOid, workingPlacement, stashPlacements, visibleStashIndices]);
 
   const allNodes = useMemo(
     () => [...flowNodes, ...specialNodes],

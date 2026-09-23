@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { GitMerge, ChevronsDownUp } from "lucide-react";
-import type { CommitNode, RefLabel } from "../../api/client";
+import { GitMerge, ChevronsDownUp, Archive } from "lucide-react";
+import type { CommitNode, RefLabel, StashEntry } from "../../api/client";
 import { refBadgeClass } from "./refBadge";
 import Tooltip from "../../components/Tooltip";
 
@@ -14,6 +14,26 @@ interface CommitNodeData {
   canCollapse?: boolean;
   /** Collapse the linear run this commit heads. */
   onCollapse?: (oid: string) => void;
+  /** Stashes created on this commit (its `base_oid`). Empty → no stash badge. */
+  stashes?: StashEntry[];
+  /** The stash index currently selected (drives the badge's active shading), or null. */
+  selectedStashIndex?: number | null;
+  /** Select a stash (by index) → opens its diff in the right pane. */
+  onSelectStash?: (index: number) => void;
+}
+
+/**
+ * Classes for the amber stash pill/badge. `active` (a stash on this commit is
+ * the current selection) brightens the border/fill; otherwise it's a muted
+ * amber that lifts on hover.
+ */
+function stashBadgeClass(active: boolean): string {
+  return [
+    "flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono leading-4 border transition-colors cursor-default",
+    active
+      ? "border-amber-400 bg-amber-900/50 text-amber-200"
+      : "border-amber-700/60 bg-amber-950/30 text-amber-300/90 hover:border-amber-400/70",
+  ].join(" ");
 }
 
 /**
@@ -27,7 +47,7 @@ interface CommitNodeData {
  * (parent commits sit BELOW their children, so the source handle is on top).
  */
 function CommitNodeComponent({ data }: NodeProps) {
-  const { commit, refs, selected, onSelect, canCollapse, onCollapse } =
+  const { commit, refs, selected, onSelect, canCollapse, onCollapse, stashes, selectedStashIndex, onSelectStash } =
     data as unknown as CommitNodeData;
 
   const date = new Date(commit.timestamp * 1000);
@@ -146,6 +166,70 @@ function CommitNodeComponent({ data }: NodeProps) {
 
       {/* Author */}
       <div className="text-[#8b949e] truncate mt-0.5">{commit.author_name}</div>
+
+      {/* Stash badge: compact amber pill showing how many stashes were created
+          on this commit. A stash isn't a node "just hanging around"; it lives
+          here on the commit it was built on, one click from its diff. Hovering
+          the badge opens an interactive tooltip that lists every stash as its
+          own clickable row — whether there's one stash or several, you always
+          pick the diff to view the same way (from the tooltip). The badge itself
+          is just the hover host; it shades "active" while one of this commit's
+          stashes is the current selection. */}
+      {stashes && stashes.length > 0 && (() => {
+        const activeIdx = selectedStashIndex ?? -1;
+        const isActive = stashes.some((s) => s.index === activeIdx);
+
+        // ONE consistent interaction whether there's a single stash or several:
+        // the badge hosts an interactive tooltip listing each stash as its own
+        // clickable row, and you always pick the diff to view from that list.
+        return (
+          <Tooltip
+            interactive
+            primary={
+              <span className="flex flex-col gap-1">
+                {stashes.map((s) => {
+                  const rowActive = s.index === activeIdx;
+                  return (
+                    <button
+                      key={s.index}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectStash?.(s.index);
+                      }}
+                      className={[
+                        "flex items-start gap-1.5 rounded px-1 py-0.5 text-left transition-colors",
+                        rowActive
+                          ? "bg-amber-900/50 text-amber-100"
+                          : "text-[#e6edf3] hover:bg-amber-950/50",
+                      ].join(" ")}
+                    >
+                      <Archive size={10} className="mt-0.5 shrink-0 text-amber-300/90" />
+                      <span className="min-w-0">
+                        <span className="font-mono text-amber-300/90">
+                          stash@{`{${s.index}}`}
+                        </span>{" "}
+                        <span className="break-words">{s.message}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </span>
+            }
+            secondary={
+              stashes.length === 1
+                ? "click to view its diff"
+                : "click a stash to view its diff"
+            }
+            placement="bottom"
+            className="mt-1 inline-block"
+          >
+            <span aria-pressed={isActive} className={stashBadgeClass(isActive)}>
+              <Archive size={10} />
+              {stashes.length === 1 ? "stash" : `${stashes.length} stashes`}
+            </span>
+          </Tooltip>
+        );
+      })()}
 
       {/* Source handles (parent emits up to its child above) */}
       <Handle
