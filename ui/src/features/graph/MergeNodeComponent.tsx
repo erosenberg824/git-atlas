@@ -4,6 +4,7 @@ import { GitMerge, GitBranch, ChevronsDownUp } from "lucide-react";
 import type { CommitNode, RefLabel } from "../../api/client";
 import type { MergeAffordance } from "./collapse";
 import FoldedRefBadge from "./FoldedRefBadge";
+import Tooltip from "../../components/Tooltip";
 
 interface MergeNodeData {
   commit: CommitNode;
@@ -77,16 +78,21 @@ function MergeNodeComponent({ data }: NodeProps) {
           (Req 19.1–19.3, Property 10). This is the region-collapse control; the
           per-secondary-parent hidden-branch affordances below are separate. */}
       {canCollapse && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onCollapse?.(commit.oid);
-          }}
-          className="absolute top-1 right-1 z-10 rounded p-0.5 text-purple-300/80 hover:text-purple-200 hover:bg-purple-900/40"
-          title="Collapse this linear run of commits"
+        <Tooltip
+          primary="Collapse this linear run of commits"
+          placement="top"
+          className="absolute top-1 right-1 z-10"
         >
-          <ChevronsDownUp size={11} />
-        </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onCollapse?.(commit.oid);
+            }}
+            className="rounded p-0.5 text-purple-300/80 hover:text-purple-200 hover:bg-purple-900/40"
+          >
+            <ChevronsDownUp size={11} />
+          </button>
+        </Tooltip>
       )}
 
       {/* Handle geometry note (copied verbatim from CommitNodeComponent so a
@@ -130,23 +136,23 @@ function MergeNodeComponent({ data }: NodeProps) {
       {refs.length > 0 && (
         <div className={["flex flex-wrap gap-1 mb-1", canCollapse ? "pr-5" : ""].join(" ")}>
           {refs.map((ref) => (
-            <span
-              key={ref.name}
-              title={ref.name}
-              className={[
-                "px-1.5 py-0 rounded text-[10px] font-mono leading-4 max-w-full truncate inline-block align-bottom",
-                ref.is_head
-                  ? "bg-green-900/60 text-green-300 border border-green-700/50"
-                  : ref.kind === "tag"
-                  ? "bg-yellow-900/60 text-yellow-300 border border-yellow-700/50"
-                  : ref.kind === "remotebranch"
-                  ? "bg-orange-900/40 text-orange-300 border border-orange-700/50"
-                  : "bg-blue-900/60 text-blue-300 border border-blue-700/50",
-              ].join(" ")}
-            >
-              {ref.is_head ? "● " : ""}
-              {ref.name}
-            </span>
+            <Tooltip key={ref.name} primary={ref.name} mono className="min-w-0 max-w-full">
+              <span
+                className={[
+                  "px-1.5 py-0 rounded text-[10px] font-mono leading-4 max-w-full truncate inline-block align-bottom",
+                  ref.is_head
+                    ? "bg-green-900/60 text-green-300 border border-green-700/50"
+                    : ref.kind === "tag"
+                    ? "bg-yellow-900/60 text-yellow-300 border border-yellow-700/50"
+                    : ref.kind === "remotebranch"
+                    ? "bg-orange-900/40 text-orange-300 border border-orange-700/50"
+                    : "bg-blue-900/60 text-blue-300 border border-blue-700/50",
+                ].join(" ")}
+              >
+                {ref.is_head ? "● " : ""}
+                {ref.name}
+              </span>
+            </Tooltip>
           ))}
         </div>
       )}
@@ -186,29 +192,34 @@ function MergeNodeComponent({ data }: NodeProps) {
         <div className="flex flex-col gap-1 mt-1.5">
           {hiddenGroups.map((g) => (
             <div key={g.id} className="flex flex-wrap items-center gap-1">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onTogglePath(commit.oid, g.parentIndex, g.folded);
-                }}
-                title={
+              <Tooltip
+                primary={g.folded ? "Merged-in branch" : "Merged-in branch revealed"}
+                secondary={
                   g.folded
-                    ? `${g.hiddenCount} commits on a merged-in branch — click to reveal`
-                    : `Merged-in branch revealed (${g.hiddenCount} commits) — click to hide`
+                    ? `${g.hiddenCount} commits — click to reveal`
+                    : `${g.hiddenCount} commits — click to hide`
                 }
-                className={[
-                  "flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono leading-4 border transition-colors duration-100",
-                  g.folded
-                    ? "bg-purple-900/50 text-purple-200 border-purple-700/60 hover:border-purple-400/70"
-                    : "bg-purple-950/40 text-purple-300/80 border-dashed border-purple-700/50 hover:border-purple-400/70",
-                ].join(" ")}
+                placement="top"
               >
-                <GitBranch size={10} className="shrink-0" />
-                <span>{g.hiddenCount}</span>
-                {g.folded ? null : (
-                  <ChevronsDownUp size={10} className="shrink-0 opacity-70" />
-                )}
-              </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onTogglePath(commit.oid, g.parentIndex, g.folded);
+                  }}
+                  className={[
+                    "flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono leading-4 border transition-colors duration-100",
+                    g.folded
+                      ? "bg-purple-900/50 text-purple-200 border-purple-700/60 hover:border-purple-400/70"
+                      : "bg-purple-950/40 text-purple-300/80 border-dashed border-purple-700/50 hover:border-purple-400/70",
+                  ].join(" ")}
+                >
+                  <GitBranch size={10} className="shrink-0" />
+                  <span>{g.hiddenCount}</span>
+                  {g.folded ? null : (
+                    <ChevronsDownUp size={10} className="shrink-0 opacity-70" />
+                  )}
+                </button>
+              </Tooltip>
               {g.foldedRefs.length > 0 &&
                 g.foldedRefs.map((fr, i) => (
                   <FoldedRefBadge

@@ -29,6 +29,7 @@ import FileBrowser from "./features/tree/FileBrowser";
 import FileViewer from "./features/tree/FileViewer";
 import SearchPanel from "./features/search/SearchPanel";
 import { WorkingPanel, StashPanel } from "./features/working/WorkingPanel";
+import Tooltip from "./components/Tooltip";
 
 type RightPanel = "commit" | "diff" | "tree" | "search";
 
@@ -360,20 +361,21 @@ export default function App() {
               Open
             </button>
             {tauri && (
-              <button
-                onClick={async () => {
-                  const picked = await pickDirectory();
-                  if (picked) {
-                    setRepoPath(picked);
-                    openRepo(picked);
-                  }
-                }}
-                disabled={openingRepo}
-                className="px-3 py-2 bg-[#21262d] hover:bg-[#30363d] disabled:opacity-50 text-[#e6edf3] text-sm rounded-md border border-[#30363d] transition-colors flex items-center gap-2"
-                title="Browse for a folder"
-              >
-                Browse…
-              </button>
+              <Tooltip primary="Browse for a folder">
+                <button
+                  onClick={async () => {
+                    const picked = await pickDirectory();
+                    if (picked) {
+                      setRepoPath(picked);
+                      openRepo(picked);
+                    }
+                  }}
+                  disabled={openingRepo}
+                  className="px-3 py-2 bg-[#21262d] hover:bg-[#30363d] disabled:opacity-50 text-[#e6edf3] text-sm rounded-md border border-[#30363d] transition-colors flex items-center gap-2"
+                >
+                  Browse…
+                </button>
+              </Tooltip>
             )}
           </div>
           {repoError && (
@@ -441,17 +443,18 @@ export default function App() {
         <GitBranch size={16} className="text-blue-400" />
         <span className="text-sm font-semibold text-[#e6edf3]">git-atlas</span>
         <span className="text-[#8b949e] text-xs font-mono truncate">{repoPath}</span>
-        <button
-          onClick={() => {
-            api.repo.recent().then(setRecentRepos).catch(() => {});
-            setShowPicker(true);
-          }}
-          className="ml-auto flex items-center gap-1.5 px-2.5 py-1 text-xs text-[#8b949e] hover:text-[#e6edf3] border border-[#30363d] hover:border-[#58a6ff]/50 rounded-md transition-colors shrink-0"
-          title="Open a different repository"
-        >
-          <FolderOpen size={13} />
-          Change repo
-        </button>
+        <Tooltip primary="Open a different repository" className="ml-auto shrink-0">
+          <button
+            onClick={() => {
+              api.repo.recent().then(setRecentRepos).catch(() => {});
+              setShowPicker(true);
+            }}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-[#8b949e] hover:text-[#e6edf3] border border-[#30363d] hover:border-[#58a6ff]/50 rounded-md transition-colors"
+          >
+            <FolderOpen size={13} />
+            Change repo
+          </button>
+        </Tooltip>
       </header>
 
       {/* Main layout */}
@@ -502,14 +505,15 @@ export default function App() {
                     keeps its own panel styling. */}
                 <div className="flex items-center gap-2 rounded-md bg-[#161b22] p-1">
                   <FindRefBox refs={graph.refs} onJump={(oid) => setJumpToOid(oid)} />
-                  <button
-                    onClick={() => setShowBranchControl((s) => !s)}
-                    className={controlButtonClass(showBranchControl)}
-                    title="Show/hide branches"
-                  >
-                    <GitBranch size={12} />
-                    Branches
-                  </button>
+                  <Tooltip primary="Show/hide branches">
+                    <button
+                      onClick={() => setShowBranchControl((s) => !s)}
+                      className={controlButtonClass(showBranchControl)}
+                    >
+                      <GitBranch size={12} />
+                      Branches
+                    </button>
+                  </Tooltip>
                   <ToggleSwitch
                     checked={switchOn}
                     pending={viewModePending}

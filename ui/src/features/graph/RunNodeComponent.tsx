@@ -3,6 +3,7 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { ChevronsUpDown } from "lucide-react";
 import type { CollapsedRunData } from "./collapse";
 import FoldedRefBadge from "./FoldedRefBadge";
+import Tooltip from "../../components/Tooltip";
 
 interface RunNodeProps extends CollapsedRunData {
   selected: boolean;
@@ -38,7 +39,6 @@ function RunNodeComponent({ data }: NodeProps) {
   return (
     <div
       onClick={() => d.onExpand(d.id)}
-      title="Click to expand this run of commits"
       className={[
         "relative px-3 py-2 rounded-md border border-dashed text-xs cursor-pointer min-w-[180px] max-w-[210px]",
         "transition-colors duration-100 bg-[#161b22]",
@@ -82,13 +82,13 @@ function RunNodeComponent({ data }: NodeProps) {
           label is available on hover via `title`. `pr-5` reserves space so a
           long truncated label does not slide under the top-right control. */}
       <div className="flex items-center gap-1.5 mb-0.5 pr-5 text-purple-200 font-semibold">
-        <span className="min-w-0 truncate" title={labelText}>
-          {labelText}
-        </span>
+        <Tooltip primary={labelText} mono className="min-w-0">
+          <span className="min-w-0 truncate">{labelText}</span>
+        </Tooltip>
       </div>
-      <div className="text-[#8b949e] text-[11px] truncate" title={rangeText}>
-        {rangeText}
-      </div>
+      <Tooltip primary={rangeText} className="w-full">
+        <div className="w-full text-[#8b949e] text-[11px] truncate">{rangeText}</div>
+      </Tooltip>
       <div className="text-[#6e7681] text-[10px] mt-0.5 truncate">click to expand</div>
     </div>
   );

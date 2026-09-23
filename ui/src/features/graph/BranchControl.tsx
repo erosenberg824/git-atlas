@@ -4,6 +4,7 @@ import type { BranchInfo, BranchVisibility } from "./branches";
 import { nextVisibility } from "./branches";
 import type { BranchGroup } from "./branchGroups";
 import { isPaired } from "./branchGroups";
+import Tooltip from "../../components/Tooltip";
 
 /**
  * Branch visibility control. Renders one row per branch group:
@@ -64,40 +65,19 @@ export default function BranchControl({
     v === "expanded" ? "expand" : v === "collapsed" ? "collapse" : "hide";
 
   /**
-   * Custom hover tooltip (native `title` is slow and unstyled). Shows the full
-   * branch name prominently, with the next action (target icon + verb) on a
-   * separate, muted line. Appears instantly on hover via `group-hover`; the
-   * parent button must be `group relative`.
+   * The muted "next action" line for a branch-state control's tooltip: the verb
+   * for the state a click will land in, plus that state's glyph. Fed to the
+   * shared `Tooltip` as its `secondary` content.
    */
-  const tooltip = (name: string, v: BranchVisibility) => {
+  const actionHint = (v: BranchVisibility) => {
     const next = nextVisibility(v);
     return (
-      <span className="pointer-events-none absolute left-0 top-full mt-1 z-30 flex flex-col gap-1 rounded border border-[#30363d] bg-[#0d1117] px-2 py-1.5 opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
-        <span className="font-mono whitespace-nowrap text-[#e6edf3]">{name}</span>
-        <span className="flex items-center gap-1 whitespace-nowrap text-[10px] text-[#8b949e]">
-          click to {actionVerb(next)}
-          {icon(next)}
-        </span>
-      </span>
+      <>
+        click to {actionVerb(next)}
+        {icon(next)}
+      </>
     );
   };
-
-  /**
-   * A generic styled hover tooltip matching the row tooltip's look, for
-   * elements that aren't branch-state controls (e.g. the remote pill). Two
-   * lines: a prominent primary line and a muted secondary hint.
-   *
-   * Positioned against the full-width row (`group/row`) rather than the narrow
-   * pill, so it can use the panel's width: centered, but inset from both edges
-   * (`left-2 right-2`) so it never overruns the panel and wraps naturally
-   * within that space instead of being forced skinny.
-   */
-  const pillTooltip = (primary: string, hint: string) => (
-    <span className="pointer-events-none absolute left-2 right-2 top-full z-30 mt-1 flex flex-col gap-1 rounded border border-[#30363d] bg-[#0d1117] px-2 py-1.5 opacity-0 shadow-lg transition-opacity peer-hover/pill:opacity-100">
-      <span className="font-mono break-words text-[#e6edf3]">{primary}</span>
-      <span className="text-[10px] text-[#8b949e]">{hint}</span>
-    </span>
-  );
 
   /**
    * A single per-member control (icon + name), cycling that branch alone.
@@ -107,23 +87,23 @@ export default function BranchControl({
   const memberButton = (b: BranchInfo, label?: string) => {
     const v = visibility.get(b.name) ?? "hidden";
     return (
-      <button
-        key={b.name}
-        onClick={() => onCycle(b.name)}
-        className="group relative flex items-center gap-1.5 min-w-0 w-full px-1.5 py-0.5 rounded hover:bg-[#30363d] text-left"
-      >
-        {icon(v)}
-        <span
-          className={[
-            "font-mono truncate flex-1",
-            v === "hidden" ? "text-[#6e7681]" : "text-[#e6edf3]",
-          ].join(" ")}
+      <Tooltip key={b.name} primary={b.name} mono secondary={actionHint(v)} className="w-full">
+        <button
+          onClick={() => onCycle(b.name)}
+          className="flex items-center gap-1.5 min-w-0 w-full px-1.5 py-0.5 rounded hover:bg-[#30363d] text-left"
         >
-          {b.isHead ? "● " : ""}
-          {label ?? b.name}
-        </span>
-        {tooltip(b.name, v)}
-      </button>
+          {icon(v)}
+          <span
+            className={[
+              "font-mono truncate flex-1",
+              v === "hidden" ? "text-[#6e7681]" : "text-[#e6edf3]",
+            ].join(" ")}
+          >
+            {b.isHead ? "● " : ""}
+            {label ?? b.name}
+          </span>
+        </button>
+      </Tooltip>
     );
   };
 
@@ -170,63 +150,70 @@ export default function BranchControl({
             return (
               <div key={local.name} className="rounded">
                 <div className="relative flex items-center gap-0.5 px-1 py-1">
-                  <button
-                    onClick={() => onCycleGroup(g.members)}
-                    className="group relative shrink-0 p-1 rounded hover:bg-[#21262d]"
+                  <Tooltip
+                    primary={`${local.name} + ${remoteNames}`}
+                    mono
+                    secondary={actionHint(lv)}
                   >
-                    {mixed ? (
-                      <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-[#8b949e]">
-                        <Minus size={13} />
-                      </span>
-                    ) : (
-                      icon(lv)
-                    )}
-                    {tooltip(`${local.name} + ${remoteNames}`, lv)}
-                  </button>
-                  <button
-                    onClick={() => onCycleGroup(g.members)}
-                    className="group relative flex min-w-0 items-center gap-1.5 px-1 py-0.5 rounded hover:bg-[#30363d] text-left"
-                  >
-                    <span
-                      className={[
-                        "font-mono truncate",
-                        allHidden ? "text-[#6e7681]" : "text-[#e6edf3]",
-                      ].join(" ")}
+                    <button
+                      onClick={() => onCycleGroup(g.members)}
+                      className="shrink-0 p-1 rounded hover:bg-[#21262d]"
                     >
-                      {local.isHead ? "● " : ""}
-                      {local.name}
-                    </span>
-                    {tooltip(`${local.name} + ${remoteNames}`, lv)}
-                  </button>
-                  <button
-                    onClick={() => toggleExpanded(local.name)}
-                    className={[
-                      "peer/pill relative ml-1 shrink-0 inline-flex h-4 items-center justify-center gap-0.5 rounded-full pl-1.5 pr-1",
-                      "bg-orange-500/25 text-orange-300 ring-1 ring-orange-700/50",
-                      "text-[10px] font-medium leading-none hover:bg-orange-500/40",
-                    ].join(" ")}
-                    aria-expanded={isOpen}
+                      {mixed ? (
+                        <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-[#8b949e]">
+                          <Minus size={13} />
+                        </span>
+                      ) : (
+                        icon(lv)
+                      )}
+                    </button>
+                  </Tooltip>
+                  <Tooltip
+                    primary={`${local.name} + ${remoteNames}`}
+                    mono
+                    secondary={actionHint(lv)}
                   >
-                    <span className="inline-flex w-2 justify-center tabular-nums">
-                      {remotes.length}
-                    </span>
-                    {isOpen ? (
-                      <ChevronDown size={11} className="shrink-0" />
-                    ) : (
-                      <ChevronRight size={11} className="shrink-0" />
-                    )}
-                  </button>
+                    <button
+                      onClick={() => onCycleGroup(g.members)}
+                      className="flex min-w-0 items-center gap-1.5 px-1 py-0.5 rounded hover:bg-[#30363d] text-left"
+                    >
+                      <span
+                        className={[
+                          "font-mono truncate",
+                          allHidden ? "text-[#6e7681]" : "text-[#e6edf3]",
+                        ].join(" ")}
+                      >
+                        {local.isHead ? "● " : ""}
+                        {local.name}
+                      </span>
+                    </button>
+                  </Tooltip>
+                  <Tooltip
+                    primary={remoteNames}
+                    mono
+                    secondary={`${remotes.length} remote-tracking branch${remotes.length > 1 ? "es" : ""} — click to ${isOpen ? "hide" : "view"}`}
+                  >
+                    <button
+                      onClick={() => toggleExpanded(local.name)}
+                      className={[
+                        "ml-1 shrink-0 inline-flex h-4 items-center justify-center gap-0.5 rounded-full pl-1.5 pr-1",
+                        "bg-orange-500/25 text-orange-300 ring-1 ring-orange-700/50",
+                        "text-[10px] font-medium leading-none hover:bg-orange-500/40",
+                      ].join(" ")}
+                      aria-expanded={isOpen}
+                    >
+                      <span className="inline-flex w-2 justify-center tabular-nums">
+                        {remotes.length}
+                      </span>
+                      {isOpen ? (
+                        <ChevronDown size={11} className="shrink-0" />
+                      ) : (
+                        <ChevronRight size={11} className="shrink-0" />
+                      )}
+                    </button>
+                  </Tooltip>
                   {/* spacer keeps the row full-width so it aligns with others */}
                   <div className="flex-1" />
-                  {/* Pill tooltip lives at row level (full panel width) but is
-                      triggered by pill hover via the `group/pill` scope, so it
-                      can spread across the panel instead of being cramped by
-                      the narrow pill. Inset from both edges so it never
-                      overruns. */}
-                  {pillTooltip(
-                    remoteNames,
-                    `${remotes.length} remote-tracking branch${remotes.length > 1 ? "es" : ""} — click to ${isOpen ? "hide" : "view"}`,
-                  )}
                 </div>
                 {isOpen && (
                   <div className="ml-3 mr-3 flex min-w-0 flex-col gap-0.5 rounded border border-l-2 border-[#30363d] border-l-[#6e7681] bg-[#1c2128] pb-1 pl-3 pr-1 pt-1">
@@ -245,23 +232,23 @@ export default function BranchControl({
           if (!b) return null;
           const v = visibility.get(b.name) ?? "hidden";
           return (
-            <button
-              key={b.name}
-              onClick={() => onCycle(b.name)}
-              className="group relative flex w-full items-center gap-1 px-1 py-1 rounded hover:bg-[#21262d] text-left"
-            >
-              <span className="shrink-0 p-1">{icon(v)}</span>
-              <span
-                className={[
-                  "font-mono truncate flex-1 px-1.5",
-                  v === "hidden" ? "text-[#6e7681]" : "text-[#e6edf3]",
-                ].join(" ")}
+            <Tooltip key={b.name} primary={b.name} mono secondary={actionHint(v)} className="w-full">
+              <button
+                onClick={() => onCycle(b.name)}
+                className="flex w-full items-center gap-1 px-1 py-1 rounded hover:bg-[#21262d] text-left"
               >
-                {b.isHead ? "● " : ""}
-                {b.name}
-              </span>
-              {tooltip(b.name, v)}
-            </button>
+                <span className="shrink-0 p-1">{icon(v)}</span>
+                <span
+                  className={[
+                    "font-mono truncate flex-1 px-1.5",
+                    v === "hidden" ? "text-[#6e7681]" : "text-[#e6edf3]",
+                  ].join(" ")}
+                >
+                  {b.isHead ? "● " : ""}
+                  {b.name}
+                </span>
+              </button>
+            </Tooltip>
           );
         })}
         {shown.length === 0 && (

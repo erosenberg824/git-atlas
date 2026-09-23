@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, FileText } from "lucide-react";
 import { api, type BlobResponse } from "../../api/client";
+import Tooltip from "../../components/Tooltip";
 
 /**
  * Displays the contents of a file (blob) at a given commit. Used by the Files
@@ -42,9 +43,11 @@ export default function FileViewer({ oid, path }: { oid: string; path: string })
       {/* File header */}
       <div className="flex items-center gap-2 px-3 h-8 border-b border-[#30363d] bg-[#161b22] shrink-0">
         <FileText size={13} className="text-[#8b949e]" />
-        <span className="text-xs font-mono text-[#e6edf3] truncate" title={blob.path}>
-          {blob.path}
-        </span>
+        <Tooltip primary={blob.path} mono className="min-w-0">
+          <span className="text-xs font-mono text-[#e6edf3] truncate">
+            {blob.path}
+          </span>
+        </Tooltip>
         <span className="text-[10px] text-[#6e7681] ml-auto shrink-0">{blob.size} bytes</span>
       </div>
 

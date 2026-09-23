@@ -3,6 +3,7 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { GitMerge, ChevronsDownUp } from "lucide-react";
 import type { CommitNode, RefLabel } from "../../api/client";
 import { refBadgeClass } from "./refBadge";
+import Tooltip from "../../components/Tooltip";
 
 interface CommitNodeData {
   commit: CommitNode;
@@ -51,16 +52,21 @@ function CommitNodeComponent({ data }: NodeProps) {
           node's expand affordance — the control does not jump on fold/expand
           (Req 19.1–19.3, Property 10). */}
       {canCollapse && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onCollapse?.(commit.oid);
-          }}
-          className="absolute top-1 right-1 z-10 rounded p-0.5 text-purple-300/80 hover:text-purple-200 hover:bg-purple-900/40"
-          title="Collapse this linear run of commits"
+        <Tooltip
+          primary="Collapse this linear run of commits"
+          placement="top"
+          className="absolute top-1 right-1 z-10"
         >
-          <ChevronsDownUp size={11} />
-        </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onCollapse?.(commit.oid);
+            }}
+            className="rounded p-0.5 text-purple-300/80 hover:text-purple-200 hover:bg-purple-900/40"
+          >
+            <ChevronsDownUp size={11} />
+          </button>
+        </Tooltip>
       )}
 
       {/* Handle geometry note:
@@ -103,14 +109,12 @@ function CommitNodeComponent({ data }: NodeProps) {
       {refs.length > 0 && (
         <div className={["flex flex-wrap gap-1 mb-1", canCollapse ? "pr-5" : ""].join(" ")}>
           {refs.map((ref) => (
-            <span
-              key={ref.name}
-              title={ref.name}
-              className={refBadgeClass(ref, { size: "node" })}
-            >
-              {ref.is_head ? "● " : ""}
-              {ref.name}
-            </span>
+            <Tooltip key={ref.name} primary={ref.name} mono className="min-w-0 max-w-full">
+              <span className={refBadgeClass(ref, { size: "node" })}>
+                {ref.is_head ? "● " : ""}
+                {ref.name}
+              </span>
+            </Tooltip>
           ))}
         </div>
       )}

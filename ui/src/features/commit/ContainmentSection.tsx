@@ -6,6 +6,7 @@ import {
   type ContainmentResponse,
 } from "../../api/client";
 import { refBadgeClass } from "../graph/refBadge";
+import Tooltip from "../../components/Tooltip";
 
 /** How many badges to show per group before collapsing behind "+N more". */
 const COLLAPSED_LIMIT = 6;
@@ -47,10 +48,12 @@ function Badge({ ref }: { ref: ContainingRef }) {
   // `is_head`, so we synthesize it for the default branch here.
   const styled = ref.is_default_branch ? { ...ref, is_head: true } : ref;
   return (
-    <span title={ref.name} className={refBadgeClass(styled, { size: "panel" })}>
-      {ref.is_default_branch ? "● " : ""}
-      {ref.name}
-    </span>
+    <Tooltip primary={ref.name} mono className="min-w-0 max-w-full">
+      <span className={refBadgeClass(styled, { size: "panel" })}>
+        {ref.is_default_branch ? "● " : ""}
+        {ref.name}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -104,13 +107,14 @@ function BadgeGroup({
         <Badge key={`${r.kind}:${r.name}`} ref={r} />
       ))}
       {hidden > 0 && (
-        <button
-          onClick={() => setExpanded(true)}
-          className="px-1.5 py-0.5 rounded text-[11px] text-[#8b949e] border border-[#30363d] hover:border-[#58a6ff]/50 hover:text-[#e6edf3] transition-colors"
-          title={`Show ${hidden} more`}
-        >
-          +{hidden}
-        </button>
+        <Tooltip primary={`Show ${hidden} more`}>
+          <button
+            onClick={() => setExpanded(true)}
+            className="px-1.5 py-0.5 rounded text-[11px] text-[#8b949e] border border-[#30363d] hover:border-[#58a6ff]/50 hover:text-[#e6edf3] transition-colors"
+          >
+            +{hidden}
+          </button>
+        </Tooltip>
       )}
       {expanded && refs.length > COLLAPSED_LIMIT && (
         <button

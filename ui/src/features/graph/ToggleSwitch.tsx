@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Tooltip from "../../components/Tooltip";
 
 /**
  * A compact on/off switch for the graph scope-control overlay, styled to match
@@ -30,9 +31,8 @@ export default function ToggleSwitch({
   title?: string;
   pending?: boolean;
 }) {
-  return (
+  const control = (
     <label
-      title={title}
       className="group self-start flex items-center gap-2 px-2 py-1 text-xs text-[#8b949e] hover:text-[#e6edf3] cursor-pointer select-none transition-colors"
     >
       <input
@@ -68,5 +68,16 @@ export default function ToggleSwitch({
       </span>
       <span className="flex items-center gap-1">{children}</span>
     </label>
+  );
+
+  // The switch's explanatory hint uses the shared styled tooltip; the label
+  // itself is the trigger. `self-start` on the label keeps the control from
+  // stretching, and the Tooltip wrapper is `self-start` too so it doesn't grow.
+  return title ? (
+    <Tooltip primary={title} className="self-start">
+      {control}
+    </Tooltip>
+  ) : (
+    control
   );
 }

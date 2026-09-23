@@ -1,6 +1,7 @@
 import { memo } from "react";
 import type { RefLabel } from "../../api/client";
 import type { FoldedRef } from "./collapse";
+import Tooltip from "../../components/Tooltip";
 
 /**
  * The four ref "hues" a badge can take, matching CommitNodeComponent's ref
@@ -58,16 +59,22 @@ function FoldedRefBadge({ ref, buried }: FoldedRef) {
   const hue = hueFor(ref);
   const cls = buried ? BURIED_BADGE_CLASSES[hue] : SOLID_BADGE_CLASSES[hue];
   return (
-    <span
-      title={buried ? `${ref.name} — inside this folded run` : ref.name}
-      className={[
-        "px-1.5 py-0 rounded text-[10px] font-mono leading-4 max-w-full truncate inline-block align-bottom",
-        cls,
-      ].join(" ")}
+    <Tooltip
+      primary={ref.name}
+      mono
+      secondary={buried ? "inside this folded run" : undefined}
+      className="min-w-0 max-w-full"
     >
-      {ref.is_head ? "● " : ""}
-      {ref.name}
-    </span>
+      <span
+        className={[
+          "px-1.5 py-0 rounded text-[10px] font-mono leading-4 max-w-full truncate inline-block align-bottom",
+          cls,
+        ].join(" ")}
+      >
+        {ref.is_head ? "● " : ""}
+        {ref.name}
+      </span>
+    </Tooltip>
   );
 }
 
