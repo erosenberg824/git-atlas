@@ -58,22 +58,29 @@ const BURIED_BADGE_CLASSES: Record<Hue, string> = {
 function FoldedRefBadge({ ref, buried }: FoldedRef) {
   const hue = hueFor(ref);
   const cls = buried ? BURIED_BADGE_CLASSES[hue] : SOLID_BADGE_CLASSES[hue];
+  const badge = (
+    <span
+      className={[
+        "px-1.5 py-0 rounded text-[10px] font-mono leading-4 max-w-full truncate inline-block align-bottom",
+        cls,
+      ].join(" ")}
+    >
+      {ref.is_head ? "● " : ""}
+      {ref.name}
+    </span>
+  );
+  // The badge already shows the full ref name, so a tooltip that only repeats it
+  // is noise. Only wrap it when there's something extra to say — i.e. a buried
+  // ref, whose "inside this folded run" note explains why it's a ghost badge.
+  if (!buried) return badge;
   return (
     <Tooltip
       primary={ref.name}
       mono
-      secondary={buried ? "inside this folded run" : undefined}
+      secondary="inside this folded run"
       className="min-w-0 max-w-full"
     >
-      <span
-        className={[
-          "px-1.5 py-0 rounded text-[10px] font-mono leading-4 max-w-full truncate inline-block align-bottom",
-          cls,
-        ].join(" ")}
-      >
-        {ref.is_head ? "● " : ""}
-        {ref.name}
-      </span>
+      {badge}
     </Tooltip>
   );
 }

@@ -190,46 +190,68 @@ function MergeNodeComponent({ data }: NodeProps) {
           visible without expanding it. */}
       {hiddenGroups.length > 0 && (
         <div className="flex flex-col gap-1 mt-1.5">
-          {hiddenGroups.map((g) => (
-            <div key={g.id} className="flex flex-wrap items-center gap-1">
-              <Tooltip
-                primary={g.folded ? "Merged-in branch" : "Merged-in branch revealed"}
-                secondary={
-                  g.folded
-                    ? `${g.hiddenCount} commits — click to reveal`
-                    : `${g.hiddenCount} commits — click to hide`
-                }
-                placement="top"
-              >
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onTogglePath(commit.oid, g.parentIndex, g.folded);
-                  }}
-                  className={[
-                    "flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono leading-4 border transition-colors duration-100",
+          {hiddenGroups.map((g) => {
+            // The branch/ref name(s) this secondary path carries — the branch
+            // that merged in. Prefer the head ref; fall back to the first.
+            const fromName =
+              g.foldedRefs.find((fr) => !fr.buried)?.ref.name ??
+              g.foldedRefs[0]?.ref.name;
+            return (
+              <div key={g.id} className="flex flex-wrap items-center gap-1">
+                <Tooltip
+                  primary={g.folded ? "Merged branch" : "Merged branch revealed"}
+                  secondary={
                     g.folded
-                      ? "bg-purple-900/50 text-purple-200 border-purple-700/60 hover:border-purple-400/70"
-                      : "bg-purple-950/40 text-purple-300/80 border-dashed border-purple-700/50 hover:border-purple-400/70",
-                  ].join(" ")}
+                      ? `${g.hiddenCount} commits — click to reveal`
+                      : `${g.hiddenCount} commits — click to hide`
+                  }
+                  placement="top"
                 >
-                  <GitBranch size={10} className="shrink-0" />
-                  <span>{g.hiddenCount}</span>
-                  {g.folded ? null : (
-                    <ChevronsDownUp size={10} className="shrink-0 opacity-70" />
-                  )}
-                </button>
-              </Tooltip>
-              {g.foldedRefs.length > 0 &&
-                g.foldedRefs.map((fr, i) => (
-                  <FoldedRefBadge
-                    key={`${g.id}-${fr.ref.name}-${i}`}
-                    ref={fr.ref}
-                    buried={fr.buried}
-                  />
-                ))}
-            </div>
-          ))}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTogglePath(commit.oid, g.parentIndex, g.folded);
+                    }}
+                    className={[
+                      "flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono leading-4 border transition-colors duration-100 max-w-full",
+                      g.folded
+                        ? "bg-purple-900/50 text-purple-200 border-purple-700/60 hover:border-purple-400/70"
+                        : "bg-purple-950/40 text-purple-300/80 border-dashed border-purple-700/50 hover:border-purple-400/70",
+                    ].join(" ")}
+                  >
+                    <GitBranch size={10} className="shrink-0" />
+                    {/* Count stays right after the branch glyph (its original
+                        spot). When expanded, the branch that merged in is named
+                        next to it — consolidated into the purple indicator
+                        rather than a separate, cramped badge. When folded, the
+                        branch commits are hidden, so only the count shows here
+                        and the branch surfaces as full FoldedRefBadges below. */}
+                    <span>{g.hiddenCount}</span>
+                    {!g.folded && fromName && (
+                      <span className="truncate max-w-[130px]">{fromName}</span>
+                    )}
+                    {g.folded ? null : (
+                      <ChevronsDownUp size={10} className="shrink-0 opacity-70" />
+                    )}
+                  </button>
+                </Tooltip>
+                {/* While FOLDED the branch commits are hidden, so surface the
+                    branch/tag refs here as full FoldedRefBadges (their only home,
+                    with head-vs-buried styling). While EXPANDED the branch name
+                    already lives inside the affordance above and the branch
+                    renders its own badges, so nothing extra is shown here. */}
+                {g.folded &&
+                  g.foldedRefs.length > 0 &&
+                  g.foldedRefs.map((fr, i) => (
+                    <FoldedRefBadge
+                      key={`${g.id}-${fr.ref.name}-${i}`}
+                      ref={fr.ref}
+                      buried={fr.buried}
+                    />
+                  ))}
+              </div>
+            );
+          })}
         </div>
       )}
 
