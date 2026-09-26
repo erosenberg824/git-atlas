@@ -30,6 +30,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/timebounds", get(graph::get_time_bounds))
         // Commits
         .route("/commits/:oid", get(commits::get_commit))
+        .route("/commits/:oid/included", get(commits::get_included))
         .route("/commits/:oid/containment", get(containment::get_containment))
         // Diffs — static segments (working/staged/stash) are registered before
         // the /diff/:oid catch-all so they aren't parsed as commit OIDs.

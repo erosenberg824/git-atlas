@@ -65,14 +65,25 @@ export interface EdgePorts {
 
 /**
  * Pick the source + target ports for an edge from `source` to `target`, from
- * their relative grid positions alone. Target: vertical when same-lane, else the
- * facing side. Source: dominant axis (ties → vertical).
+ * their relative grid positions. Target: vertical when same-lane or when the
+ * facing vertical port is unobstructed; else the facing side. Source: leaves
+ * vertically when it can climb its own column, else the facing side.
+ *
+ * `isOccupied(lane, row)` — when supplied — reports whether a NODE sits in a
+ * given cell. It makes routing occupancy-driven instead of guessing from row
+ * distance (which was unreliable once rows became topology-derived rather than a
+ * dense per-node index): a vertical entry/exit is only chosen when the cells
+ * between the two endpoints in that column are actually empty, so a line never
+ * runs behind a stacked card. With no predicate it falls back to the previous
+ * distance heuristic (diagonally-adjacent ⇒ vertical).
  */
-export function pickEdgePorts(source: Cell, target: Cell): EdgePorts {
+export function pickEdgePorts(
+  source: Cell,
+  target: Cell,
+  isOccupied?: (lane: number, row: number) => boolean,
+): EdgePorts {
   const dLane = target.lane - source.lane; // >0: target is to the RIGHT
   const dRow = target.row - source.row; // <0: target is ABOVE (smaller row)
-
-  const vert = Math.abs(dRow);
 
   // Same lane → straight vertical at both ends. Nothing sits between two nodes
   // stacked in one column, so use the facing top/bottom ports.
@@ -82,39 +93,45 @@ export function pickEdgePorts(source: Cell, target: Cell): EdgePorts {
       : { sourceHandle: "s-bottom", targetHandle: "t-top" }; // target below
   }
 
-  // Cross-lane → the shape depends on the VERTICAL separation between the two
-  // nodes (this is the whole knob):
-  //
-  //   • DIAGONALLY ADJACENT (one row apart) → a short diagonal hop, the BOTTOM
-  //     of a branch loop: the source leaves through the SIDE facing the target
-  //     and the target is entered on its VERTICAL port (bottom/top), so a
-  //     branch's first commit "grows up out of" its fork.
-  //
-  //   • FARTHER APART (more than one row) → a tall loop climbing a lane: the
-  //     source leaves through its VERTICAL port (top/bottom) and climbs its own
-  //     column, and the target is entered on the SIDE facing the source — so the
-  //     branch tip curves back into the merge node's side, clearing the mainline
-  //     card stacked directly under the target.
-  //
-  // Together with the straight same-lane spine, a merged branch reads as a LOOP
-  // that bulges out to its lane and curves back in.
-  const diagonallyAdjacent = vert <= 1;
+  // Is the TARGET's own column clear between the target and the source's row?
+  // If so the edge can enter the target vertically (from the side the source is
+  // on) without crossing a card stacked under/over the target; otherwise it must
+  // enter through the target's SIDE. Same question for the SOURCE's column.
+  const columnClear = (lane: number, fromRowExclusive: number, toRowExclusive: number) => {
+    if (!isOccupied) {
+      // Fallback: treat only immediate neighbours as clear (old heuristic).
+      return Math.abs(toRowExclusive - fromRowExclusive) <= 1;
+    }
+    const lo = Math.min(fromRowExclusive, toRowExclusive);
+    const hi = Math.max(fromRowExclusive, toRowExclusive);
+    for (let r = lo + 1; r < hi; r++) {
+      if (isOccupied(lane, r)) return false;
+    }
+    return true;
+  };
 
-  const sourceHandle: SourceHandle = diagonallyAdjacent
-    ? dLane > 0
-      ? "s-right"
-      : "s-left"
-    : dRow <= 0
-      ? "s-top"
-      : "s-bottom";
-
-  const targetHandle: TargetHandle = diagonallyAdjacent
+  // TARGET port: enter vertically (facing the source) when the target's column
+  // is clear between them; else enter through the facing side.
+  const targetColumnClear = columnClear(target.lane, target.row, source.row);
+  const targetHandle: TargetHandle = targetColumnClear
     ? dRow <= 0
-      ? "t-bottom"
+      ? "t-bottom" // source below the target → enter target's bottom
       : "t-top"
     : dLane > 0
-      ? "t-left"
+      ? "t-left" // source is to the LEFT → enter target's left side
       : "t-right";
+
+  // SOURCE port: leave vertically (climbing its own column toward the target)
+  // when the source's column is clear between them; else leave through the
+  // facing side.
+  const sourceColumnClear = columnClear(source.lane, source.row, target.row);
+  const sourceHandle: SourceHandle = sourceColumnClear
+    ? dRow <= 0
+      ? "s-top" // target above → leave through the top
+      : "s-bottom"
+    : dLane > 0
+      ? "s-right" // target is to the RIGHT → leave through the right side
+      : "s-left";
 
   return { sourceHandle, targetHandle };
 }

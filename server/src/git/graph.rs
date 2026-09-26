@@ -12,6 +12,39 @@ pub struct CommitNode {
     pub author_email: String,
     pub timestamp: i64,
     pub parents: Vec<String>,
+    /// For merge commits (>= 2 parents): one entry per SECONDARY parent
+    /// (parents[1..]), classifying that side topologically. Empty for
+    /// non-merges. Computed against the FULL repository, not the loaded window,
+    /// so it is a stable property of the commit graph regardless of scroll/zoom.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merge_sides: Vec<MergeSide>,
+}
+
+/// Topological classification of one secondary parent of a merge.
+///
+/// `Integration` — that parent's line DEAD-ENDS at the merge: no commit
+/// descending from it lives outside the merge's own history. The side was
+/// merged in and abandoned, so folding it behind the merge is lossless and
+/// meaningful ("roll this finished branch up out of my way").
+///
+/// `Sync` — that parent's line CONTINUES PAST the merge: some commit descending
+/// from it is not a descendant of the merge (a still-living branch, e.g. `main`
+/// synced into a feature). Folding it would hide mainline history, so it is NOT
+/// offered as foldable; it reads as "this merge pulled in updates from a living
+/// line".
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MergeSideKind {
+    Integration,
+    Sync,
+}
+
+/// Per-secondary-parent merge classification, keyed by the parent's index into
+/// `CommitNode.parents` (always >= 1).
+#[derive(Debug, Serialize, Clone)]
+pub struct MergeSide {
+    pub parent_index: usize,
+    pub kind: MergeSideKind,
 }
 
 /// A directed edge from parent to child.
@@ -222,6 +255,7 @@ pub fn build_graph(
             author_email: commit.author().email().unwrap_or("").to_string(),
             timestamp: commit.time().seconds(),
             parents,
+            merge_sides: Vec::new(),
         });
         if nodes.len() >= limit {
             node_budget_left = false;
@@ -236,6 +270,11 @@ pub fn build_graph(
         nodes.iter().map(|n| n.oid.as_str()).collect();
     edges.retain(|e| node_ids.contains(e.source.as_str()) && node_ids.contains(e.target.as_str()));
 
+    // Classify each rendered merge's secondary parents (integration vs sync)
+    // against the FULL repository topology, so the result is independent of the
+    // loaded window.
+    classify_merge_sides(repo, &mut nodes)?;
+
     let refs = collect_refs(repo)?;
     Ok(GraphData {
         nodes,
@@ -245,6 +284,103 @@ pub fn build_graph(
         after_count,
         hidden_count,
     })
+}
+
+/// Classify every rendered merge's secondary parents as `Integration` (that
+/// side dead-ends at the merge) or `Sync` (that side's line continues past the
+/// merge into still-living history), against the FULL repository.
+///
+/// Definition (purely topological, window-independent): for a merge `M` with
+/// secondary parent `Pk`, the side is `Sync` iff some ref tip `T` is on or
+/// descends from `Pk` while NOT being `M` or a descendant of `M` — i.e. `Pk`'s
+/// line has a living commit outside `M`'s own history. Otherwise it dead-ends at
+/// `M` (`Integration`).
+///
+/// Witnesses are the repo's branch/tag/HEAD tips: any still-living line is
+/// anchored by such a tip, so "a commit descends from `Pk` outside `M`" is
+/// witnessed by some tip descending from `Pk` outside `M`. Using tips (a small,
+/// bounded set) keeps this to O(merges × tips) ancestry queries rather than a
+/// full reverse-reachability walk.
+fn classify_merge_sides(
+    repo: &Repository,
+    nodes: &mut [CommitNode],
+) -> Result<(), AppError> {
+    // Collect witness tip OIDs once: local + remote branches, tags, HEAD.
+    let mut tips: Vec<git2::Oid> = Vec::new();
+    if let Ok(head) = repo.head() {
+        if let Some(t) = head.target() {
+            tips.push(t);
+        }
+    }
+    if let Ok(refs) = repo.references() {
+        for r in refs.filter_map(|r| r.ok()) {
+            let name = match r.name() {
+                Some(n) => n,
+                None => continue,
+            };
+            if !(name.starts_with("refs/heads/")
+                || name.starts_with("refs/remotes/")
+                || name.starts_with("refs/tags/"))
+            {
+                continue; // skip refs/stash, refs/notes, etc.
+            }
+            if let Ok(commit) = r.peel_to_commit() {
+                tips.push(commit.id());
+            }
+        }
+    }
+    tips.sort();
+    tips.dedup();
+
+    for node in nodes.iter_mut() {
+        if node.parents.len() < 2 {
+            continue; // not a merge
+        }
+        let merge_oid = match git2::Oid::from_str(&node.oid) {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let mut sides = Vec::new();
+        for (idx, parent) in node.parents.iter().enumerate() {
+            if idx == 0 {
+                continue; // first parent is the mainline continuation
+            }
+            let pk = match git2::Oid::from_str(parent) {
+                Ok(o) => o,
+                Err(_) => continue,
+            };
+            // Sync iff the SECONDARY LINE CONTINUES PAST the merge: some tip is a
+            // STRICT descendant of the merged commit `Pk` yet is not within `M`'s
+            // history. "Strict descendant" (not `t == pk`, not an ancestor) is
+            // what distinguishes a line that kept advancing after we merged from
+            // it (real sync — e.g. main synced into a feature, main then moved
+            // on) from someone merely BRANCHING OFF the merged-in side's history
+            // (a tip at or behind `Pk`, which must NOT flip a finished
+            // integration merge into a sync). A fork off an interior feature
+            // commit is an ancestor of `Pk`, so it is never a strict descendant
+            // of `Pk` and correctly does not count.
+            let sync = tips.iter().any(|&t| {
+                t != merge_oid
+                    && repo.graph_descendant_of(t, pk).unwrap_or(false)
+                    && !is_in_history_of(repo, t, merge_oid)
+            });
+            sides.push(MergeSide {
+                parent_index: idx,
+                kind: if sync {
+                    MergeSideKind::Sync
+                } else {
+                    MergeSideKind::Integration
+                },
+            });
+        }
+        node.merge_sides = sides;
+    }
+    Ok(())
+}
+
+/// `commit` is within `base`'s history iff it IS `base` or descends from `base`.
+fn is_in_history_of(repo: &Repository, commit: git2::Oid, base: git2::Oid) -> bool {
+    commit == base || repo.graph_descendant_of(commit, base).unwrap_or(false)
 }
 
 /// Repository time bounds: newest & oldest commit timestamps (unix seconds)
@@ -426,6 +562,19 @@ mod tests {
 
     fn cleanup(dir: PathBuf) {
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Commit a MERGE of `second` into HEAD (first parent = current HEAD) with a
+    /// fixed timestamp. Leaves HEAD on the first-parent branch. Returns the merge
+    /// OID.
+    fn merge_commit(repo: &Repository, msg: &str, second: git2::Oid, ts: i64) -> git2::Oid {
+        let sig = Signature::new("t", "t@t.co", &Time::new(ts, 0)).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let other = repo.find_commit(second).unwrap();
+        // Trivial tree: reuse HEAD's tree (content merge is irrelevant to topology).
+        let tree = head.tree().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &[&head, &other])
+            .unwrap()
     }
 
     #[test]
@@ -702,6 +851,168 @@ mod tests {
             "base should have exactly one real child (tip), got {children_of_base:?}"
         );
 
+        cleanup(dir);
+    }
+
+    // Helper: fetch a node's merge-side kind for a given secondary parent index.
+    fn side_kind(g: &GraphData, merge: git2::Oid, parent_index: usize) -> MergeSideKind {
+        let node = g
+            .nodes
+            .iter()
+            .find(|n| n.oid == merge.to_string())
+            .expect("merge node present");
+        node.merge_sides
+            .iter()
+            .find(|s| s.parent_index == parent_index)
+            .unwrap_or_else(|| panic!("no merge side at index {parent_index}"))
+            .kind
+    }
+
+    #[test]
+    fn merge_side_integration_when_feature_dead_ends_at_merge() {
+        // main: base -> a ; feature off base -> f1 -> f2 ; merge feature INTO
+        // main. The feature branch is then DELETED (no ref points past the
+        // merge). Its side dead-ends at the merge -> Integration (foldable).
+        let (repo, dir) = temp_repo();
+        let base = commit(&repo, "base", 1000);
+        let a = commit(&repo, "a", 2000);
+        let _ = a;
+        let base_commit = repo.find_commit(base).unwrap();
+        repo.branch("feature", &base_commit, false).unwrap();
+        repo.set_head("refs/heads/feature").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        commit(&repo, "f1", 3000);
+        let f2 = commit(&repo, "f2", 4000);
+        // Back to main and merge feature in.
+        let main = if repo.find_reference("refs/heads/master").is_ok() {
+            "master"
+        } else {
+            "main"
+        };
+        repo.set_head(&format!("refs/heads/{main}")).unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        let m = merge_commit(&repo, "Merge branch 'feature'", f2, 5000);
+        // Delete the feature branch so nothing references its line past the merge.
+        repo.find_branch("feature", git2::BranchType::Local)
+            .unwrap()
+            .delete()
+            .unwrap();
+
+        let g = build_graph(&repo, None, 500, None, None, None).unwrap();
+        assert_eq!(side_kind(&g, m, 1), MergeSideKind::Integration);
+        cleanup(dir);
+    }
+
+    #[test]
+    fn merge_side_sync_when_merged_in_line_lives_on() {
+        // feature: base -> f1 ; main: base -> m1 -> m2 (main keeps advancing).
+        // On feature, merge main INTO feature. main's side (P2) CONTINUES past
+        // the merge (m2 descends from the merged commit m1 but not from the
+        // merge) -> Sync (not foldable). Mirrors the fbea557 case.
+        let (repo, dir) = temp_repo();
+        let base = commit(&repo, "base", 1000);
+        let m1 = commit(&repo, "m1", 2000); // on main
+        let main = if repo.find_reference("refs/heads/master").is_ok() {
+            "master"
+        } else {
+            "main"
+        };
+        // feature branches off base.
+        let base_commit = repo.find_commit(base).unwrap();
+        repo.branch("feature", &base_commit, false).unwrap();
+        repo.set_head("refs/heads/feature").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        commit(&repo, "f1", 2500);
+        // On feature, merge main (m1) in.
+        let m = merge_commit(&repo, "Merge branch 'main' into feature", m1, 3000);
+        // main advances PAST the point that was merged, so its line lives on.
+        repo.set_head(&format!("refs/heads/{main}")).unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        commit(&repo, "m2", 4000);
+
+        let g = build_graph(&repo, None, 500, None, None, None).unwrap();
+        assert_eq!(side_kind(&g, m, 1), MergeSideKind::Sync);
+        cleanup(dir);
+    }
+
+    #[test]
+    fn merge_side_integration_ignores_the_first_parent() {
+        // A merge records NO side for parent index 0 (the mainline continuation);
+        // only secondary parents are classified.
+        let (repo, dir) = temp_repo();
+        let base = commit(&repo, "base", 1000);
+        let base_commit = repo.find_commit(base).unwrap();
+        repo.branch("feature", &base_commit, false).unwrap();
+        repo.set_head("refs/heads/feature").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        let f1 = commit(&repo, "f1", 2000);
+        let main = if repo.find_reference("refs/heads/master").is_ok() {
+            "master"
+        } else {
+            "main"
+        };
+        repo.set_head(&format!("refs/heads/{main}")).unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        let m = merge_commit(&repo, "Merge branch 'feature'", f1, 3000);
+        repo.find_branch("feature", git2::BranchType::Local)
+            .unwrap()
+            .delete()
+            .unwrap();
+
+        let g = build_graph(&repo, None, 500, None, None, None).unwrap();
+        let node = g.nodes.iter().find(|n| n.oid == m.to_string()).unwrap();
+        assert!(node.merge_sides.iter().all(|s| s.parent_index >= 1));
+        assert_eq!(node.merge_sides.len(), 1);
+        cleanup(dir);
+    }
+
+    #[test]
+    fn merge_side_stays_integration_when_someone_branches_off_the_merged_side() {
+        // Integration merge of a finished feature, THEN a new branch is created
+        // off an INTERIOR feature commit (behind the merge point). That fork must
+        // NOT flip the merge from integration to sync: the feature line did not
+        // continue PAST the merge — someone just started something new from its
+        // history. Regression for the "branch off the feature branch" case.
+        let (repo, dir) = temp_repo();
+        let base = commit(&repo, "base", 1000);
+        let base_commit = repo.find_commit(base).unwrap();
+        repo.branch("feature", &base_commit, false).unwrap();
+        repo.set_head("refs/heads/feature").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        let f1 = commit(&repo, "f1", 2000); // interior feature commit
+        let f2 = commit(&repo, "f2", 3000); // feature tip that gets merged
+        let main = if repo.find_reference("refs/heads/master").is_ok() {
+            "master"
+        } else {
+            "main"
+        };
+        repo.set_head(&format!("refs/heads/{main}")).unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        let m = merge_commit(&repo, "Merge branch 'feature'", f2, 4000);
+        // Delete the feature branch, then branch off the INTERIOR commit f1.
+        repo.find_branch("feature", git2::BranchType::Local)
+            .unwrap()
+            .delete()
+            .unwrap();
+        let f1_commit = repo.find_commit(f1).unwrap();
+        repo.branch("offshoot", &f1_commit, false).unwrap();
+
+        let g = build_graph(&repo, None, 500, None, None, None).unwrap();
+        // f1 is an ancestor of f2 (=Pk), never a strict descendant, so the
+        // offshoot tip does not witness "the line continued past the merge".
+        assert_eq!(
+            side_kind(&g, m, 1),
+            MergeSideKind::Integration,
+            "a fork off the merged-in side must not turn integration into sync"
+        );
         cleanup(dir);
     }
 }

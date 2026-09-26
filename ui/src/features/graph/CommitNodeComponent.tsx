@@ -20,6 +20,8 @@ interface CommitNodeData {
   selectedStashIndex?: number | null;
   /** Select a stash (by index) → opens its diff in the right pane. */
   onSelectStash?: (index: number) => void;
+  /** This commit was merged in by the currently-selected merge (highlight ring). */
+  highlighted?: boolean;
 }
 
 /**
@@ -47,7 +49,7 @@ function stashBadgeClass(active: boolean): string {
  * (parent commits sit BELOW their children, so the source handle is on top).
  */
 function CommitNodeComponent({ data }: NodeProps) {
-  const { commit, refs, selected, onSelect, canCollapse, onCollapse, stashes, selectedStashIndex, onSelectStash } =
+  const { commit, refs, selected, onSelect, canCollapse, onCollapse, stashes, selectedStashIndex, onSelectStash, highlighted } =
     data as unknown as CommitNodeData;
 
   const date = new Date(commit.timestamp * 1000);
@@ -64,6 +66,8 @@ function CommitNodeComponent({ data }: NodeProps) {
         "transition-colors duration-100",
         selected
           ? "border-blue-400 bg-blue-950/60 shadow-[0_0_0_2px_rgba(88,166,255,0.3)]"
+          : highlighted
+          ? "border-amber-400/70 bg-[#161b22] shadow-[0_0_0_2px_rgba(251,191,36,0.35)]"
           : "border-[#30363d] bg-[#161b22] hover:border-[#58a6ff]/50",
       ].join(" ")}
     >

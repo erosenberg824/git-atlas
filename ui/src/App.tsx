@@ -80,6 +80,11 @@ export default function App() {
   // Find/jump: the oid the user wants to center/highlight (consumed by CommitGraph).
   const [jumpToOid, setJumpToOid] = useState<string | null>(null);
 
+  // Which branch is pinned to lane 0 (the trunk / mainline spine). null = the
+  // default resolution (main → master → HEAD) inside CommitGraph. The user can
+  // override it via the trunk picker in the left scope overlay.
+  const [trunkBranch, setTrunkBranch] = useState<string | null>(null);
+
   const [selectedOid, setSelectedOid] = useState<string | null>(null);
   const [activePanel, setActivePanel] = useState<RightPanel>("commit");
 
@@ -100,6 +105,7 @@ export default function App() {
       setTimeWindow(null);
       setTimeBounds(null);
       setBranchVis(new Map());
+      setTrunkBranch(null);
       setRepoPath(target);
       // Refresh the recent list so the just-opened repo moves to the front.
       api.repo.recent().then(setRecentRepos).catch(() => {});
@@ -542,6 +548,8 @@ export default function App() {
                     visibility={branchVis}
                     onCycle={cycleBranch}
                     onCycleGroup={cycleBranches}
+                    trunkBranch={trunkBranch}
+                    onSetTrunk={setTrunkBranch}
                   />
                 )}
               </div>
@@ -566,6 +574,7 @@ export default function App() {
                 jumpToOid={jumpToOid}
                 onJumpConsumed={() => setJumpToOid(null)}
                 viewMode={viewMode}
+                trunkBranch={trunkBranch}
               />
             ) : null}
             </div>
@@ -634,7 +643,11 @@ export default function App() {
               {/* Panel content */}
               <div className="flex-1 min-h-0 overflow-hidden">
                 {activePanel === "commit" && selectedOid && (
-                  <CommitPanel oid={selectedOid} onSelectFile={handleSelectFile} />
+                  <CommitPanel
+                    oid={selectedOid}
+                    onSelectFile={handleSelectFile}
+                    onSelectCommit={setSelectedOid}
+                  />
                 )}
                 {activePanel === "diff" && selectedOid && (
                   <DiffViewerWrapper oid={selectedOid} filePath={selectedFilePath} />

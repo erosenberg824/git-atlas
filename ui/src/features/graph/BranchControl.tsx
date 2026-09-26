@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Eye, EyeOff, ChevronsDownUp, Minus, ChevronDown, ChevronRight } from "lucide-react";
+import { Eye, EyeOff, ChevronsDownUp, Minus, ChevronDown, ChevronRight, Pin } from "lucide-react";
 import type { BranchInfo, BranchVisibility } from "./branches";
 import { nextVisibility } from "./branches";
 import type { BranchGroup } from "./branchGroups";
@@ -24,11 +24,17 @@ export default function BranchControl({
   visibility,
   onCycle,
   onCycleGroup,
+  trunkBranch = null,
+  onSetTrunk,
 }: {
   groups: BranchGroup[];
   visibility: Map<string, BranchVisibility>;
   onCycle: (name: string) => void;
   onCycleGroup: (names: string[]) => void;
+  /** Branch currently pinned to lane 0 (the trunk spine), or null for auto. */
+  trunkBranch?: string | null;
+  /** Pin `name` to lane 0, or clear to auto when `name` is null. */
+  onSetTrunk?: (name: string | null) => void;
 }) {
   const [filter, setFilter] = useState("");
   // Which paired groups (keyed by local branch name) are expanded to show their
@@ -87,23 +93,26 @@ export default function BranchControl({
   const memberButton = (b: BranchInfo, label?: string) => {
     const v = visibility.get(b.name) ?? "hidden";
     return (
-      <Tooltip key={b.name} primary={b.name} mono secondary={actionHint(v)} className="w-full">
-        <button
-          onClick={() => onCycle(b.name)}
-          className="flex items-center gap-1.5 min-w-0 w-full px-1.5 py-0.5 rounded hover:bg-[#30363d] text-left"
-        >
-          {icon(v)}
-          <span
-            className={[
-              "font-mono truncate flex-1",
-              v === "hidden" ? "text-[#6e7681]" : "text-[#e6edf3]",
-            ].join(" ")}
+      <div key={b.name} className="flex items-center gap-0.5 w-full">
+        <Tooltip primary={b.name} mono secondary={actionHint(v)} className="flex-1 min-w-0">
+          <button
+            onClick={() => onCycle(b.name)}
+            className="flex items-center gap-1.5 min-w-0 w-full px-1.5 py-0.5 rounded hover:bg-[#30363d] text-left"
           >
-            {b.isHead ? "● " : ""}
-            {label ?? b.name}
-          </span>
-        </button>
-      </Tooltip>
+            {icon(v)}
+            <span
+              className={[
+                "font-mono truncate flex-1",
+                v === "hidden" ? "text-[#6e7681]" : "text-[#e6edf3]",
+              ].join(" ")}
+            >
+              {b.isHead ? "● " : ""}
+              {label ?? b.name}
+            </span>
+          </button>
+        </Tooltip>
+        {trunkButton(b.name)}
+      </div>
     );
   };
 
@@ -117,6 +126,39 @@ export default function BranchControl({
       return remoteName.slice(0, slash);
     }
     return remoteName;
+  };
+
+  /**
+   * A small "pin to lane 0" (trunk) control for a branch. Highlighted when this
+   * branch is the current trunk; clicking it pins the branch, clicking the
+   * active one clears back to auto (main → master → HEAD). Only rendered when
+   * the parent supplies `onSetTrunk`.
+   */
+  const trunkButton = (name: string) => {
+    if (!onSetTrunk) return null;
+    const active = trunkBranch === name;
+    return (
+      <Tooltip
+        primary={active ? "Pinned to lane 0 (trunk)" : "Pin to lane 0 (trunk)"}
+        secondary={active ? "click to unpin (auto)" : "click to make this the mainline spine"}
+      >
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onSetTrunk(active ? null : name);
+          }}
+          aria-pressed={active}
+          className={[
+            "ml-1 shrink-0 inline-flex h-4 w-4 items-center justify-center rounded transition-colors",
+            active
+              ? "text-blue-300 bg-blue-500/25 ring-1 ring-blue-600/50"
+              : "text-[#6e7681] hover:text-blue-300 hover:bg-[#30363d]",
+          ].join(" ")}
+        >
+          <Pin size={11} className={active ? "fill-blue-400/40" : ""} />
+        </button>
+      </Tooltip>
+    );
   };
 
   return (
@@ -214,6 +256,7 @@ export default function BranchControl({
                   </Tooltip>
                   {/* spacer keeps the row full-width so it aligns with others */}
                   <div className="flex-1" />
+                  {trunkButton(local.name)}
                 </div>
                 {isOpen && (
                   <div className="ml-3 mr-3 flex min-w-0 flex-col gap-0.5 rounded border border-l-2 border-[#30363d] border-l-[#6e7681] bg-[#1c2128] pb-1 pl-3 pr-1 pt-1">
@@ -232,23 +275,26 @@ export default function BranchControl({
           if (!b) return null;
           const v = visibility.get(b.name) ?? "hidden";
           return (
-            <Tooltip key={b.name} primary={b.name} mono secondary={actionHint(v)} className="w-full">
-              <button
-                onClick={() => onCycle(b.name)}
-                className="flex w-full items-center gap-1 px-1 py-1 rounded hover:bg-[#21262d] text-left"
-              >
-                <span className="shrink-0 p-1">{icon(v)}</span>
-                <span
-                  className={[
-                    "font-mono truncate flex-1 px-1.5",
-                    v === "hidden" ? "text-[#6e7681]" : "text-[#e6edf3]",
-                  ].join(" ")}
+            <div key={b.name} className="flex items-center gap-0.5">
+              <Tooltip primary={b.name} mono secondary={actionHint(v)} className="flex-1 min-w-0">
+                <button
+                  onClick={() => onCycle(b.name)}
+                  className="flex w-full items-center gap-1 px-1 py-1 rounded hover:bg-[#21262d] text-left"
                 >
-                  {b.isHead ? "● " : ""}
-                  {b.name}
-                </span>
-              </button>
-            </Tooltip>
+                  <span className="shrink-0 p-1">{icon(v)}</span>
+                  <span
+                    className={[
+                      "font-mono truncate flex-1 px-1.5",
+                      v === "hidden" ? "text-[#6e7681]" : "text-[#e6edf3]",
+                    ].join(" ")}
+                  >
+                    {b.isHead ? "● " : ""}
+                    {b.name}
+                  </span>
+                </button>
+              </Tooltip>
+              {trunkButton(b.name)}
+            </div>
           );
         })}
         {shown.length === 0 && (

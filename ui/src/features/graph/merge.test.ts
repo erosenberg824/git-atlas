@@ -16,6 +16,9 @@ import {
   regionsFromAnchors,
   autoCollapseAnchors,
   foldedRefsFor,
+  mergedBranchName,
+  mergedFromName,
+  isSyncSide,
   type Run,
   type EffectiveGraph,
   type FoldedRef,
@@ -2417,5 +2420,283 @@ describe("Property 12: Fold Moves Selection to the Summary Node", () => {
     // Selecting a non-member (the still-visible merge M) → unchanged.
     const repOutside = members.includes("M") ? members[0] : "M";
     expect(repOutside).toBe("M");
+  });
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// mergedBranchName / mergedFromName — accurate "what merged in" label
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("mergedBranchName", () => {
+  it("parses `Merge branch 'X'`", () => {
+    expect(mergedBranchName("Merge branch 'main'")).toBe("main");
+  });
+
+  it("parses `Merge branch 'X' into Y` as X (the source that merged in)", () => {
+    expect(mergedBranchName("Merge branch 'main' into feature-alpha")).toBe(
+      "main",
+    );
+  });
+
+  it("parses `Merge remote-tracking branch 'origin/X'`", () => {
+    expect(
+      mergedBranchName("Merge remote-tracking branch 'origin/dev'"),
+    ).toBe("origin/dev");
+  });
+
+  it("parses `Merge tag 'X'`", () => {
+    expect(mergedBranchName("Merge tag 'v1.2.0'")).toBe("v1.2.0");
+  });
+
+  it("parses `Merge pull request #N from owner/branch`", () => {
+    expect(
+      mergedBranchName("Merge pull request #42 from acme/feature-x"),
+    ).toBe("acme/feature-x");
+  });
+
+  it("returns null for a non-merge / hand-written subject", () => {
+    expect(mergedBranchName("Fix a bug in the parser")).toBeNull();
+    expect(mergedBranchName("Merged everything by hand")).toBeNull();
+  });
+});
+
+describe("mergedFromName", () => {
+  const ref = (name: string, oid: string, kind: RefLabel["kind"] = "branch"): RefLabel => ({
+    name,
+    oid,
+    kind,
+    is_head: false,
+    tip_ts: null,
+    upstream: null,
+  });
+
+  it("prefers the merge summary's source over refs buried in the hidden path", () => {
+    // The bug: `demo-feature` sits on a commit main absorbed long ago, so it is
+    // present in the hide set — but the branch that merged in here is `main`.
+    const foldedRefs: FoldedRef[] = [
+      { ref: ref("demo-feature", "aaa"), buried: true },
+    ];
+    const refsByOid = new Map<string, RefLabel[]>([
+      ["aaa", [ref("demo-feature", "aaa")]],
+    ]);
+    expect(
+      mergedFromName(
+        "Merge branch 'main' into feature-alpha",
+        "pm", // secondary parent (main side); no ref exactly on it
+        foldedRefs,
+        refsByOid,
+      ),
+    ).toBe("main");
+  });
+
+  it("falls back to a ref on the secondary parent tip when the message is opaque", () => {
+    const refsByOid = new Map<string, RefLabel[]>([
+      ["pk", [ref("feature-x", "pk")]],
+    ]);
+    expect(
+      mergedFromName("Reconcile histories", "pk", [], refsByOid),
+    ).toBe("feature-x");
+  });
+
+  it("falls back to the head folded ref only when nothing better exists", () => {
+    const foldedRefs: FoldedRef[] = [
+      { ref: ref("buried", "z"), buried: true },
+      { ref: ref("tip-ref", "h"), buried: false },
+    ];
+    expect(
+      mergedFromName("Reconcile histories", "pk", foldedRefs, new Map()),
+    ).toBe("tip-ref");
+  });
+
+  it("returns null when no name can be determined", () => {
+    expect(mergedFromName("Reconcile histories", "pk", [], new Map())).toBeNull();
+  });
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// Regression: a feature-side merge stays in its P1's lane whether its merged
+// path is folded or expanded (the fbea557 "lane hopping" bug).
+//
+// Models the real topology: `main` (trunk) has its own first-parent spine
+// (mainTip -> m1 -> pm -> ...); a feature branch has tip `ftip` -> merge `M`,
+// where M's P1 is the feature side and M's P2 is `pm` on main. Folding M's
+// secondary (main-side) path via Option A absorbs `pm` (a trunk commit) onto M,
+// which — before the fix — routed the trunk run through M and dragged it into
+// lane 0 only in the collapsed view. The fix: `firstParentOf` does NOT treat a
+// first parent folded into a FOREIGN commit anchor as a continuation, and the
+// merge is bound to its P1's lane. Result: M's lane is identical folded vs
+// expanded, and equals its P1's lane.
+// ─────────────────────────────────────────────────────────────────────────
+
+import { assignLanes } from "./CommitGraph";
+
+describe("Regression — feature-side merge keeps its P1 lane across fold/expand", () => {
+  // Trunk: mainTip -> m1 -> pm -> base. Feature: ftip -> M ; M parents
+  // [fside (P1), pm (P2)] ; fside -> base. `pm` is on BOTH main's first-parent
+  // chain and is M's second parent — folding M's P2 path absorbs pm.
+  function fixture() {
+    const nodes: CommitNode[] = [
+      mk("mainTip", 100, ["m1"]),
+      mk("ftip", 95, ["M"]),
+      mk("m1", 90, ["pm"]),
+      mk("M", 85, ["fside", "pm"]), // merge: P1 feature, P2 main
+      mk("pm", 80, ["base"]),
+      mk("fside", 75, ["base"]),
+      mk("base", 10, []),
+    ];
+    const edges: CommitEdge[] = [
+      { source: "m1", target: "mainTip" },
+      { source: "M", target: "ftip" },
+      { source: "pm", target: "m1" },
+      { source: "fside", target: "M" }, // P1
+      { source: "pm", target: "M" }, // P2
+      { source: "base", target: "pm" },
+      { source: "base", target: "fside" },
+    ];
+    const refs: RefLabel[] = [
+      { name: "main", oid: "mainTip", kind: "branch", is_head: true, tip_ts: 100, upstream: null },
+      { name: "feature", oid: "ftip", kind: "branch", is_head: false, tip_ts: 95, upstream: null },
+    ];
+    return { nodes, edges, refs };
+  }
+
+  // Mirror of CommitGraph's firstParentOf, INCLUDING the foreign-anchor guard.
+  function firstParentOf(
+    nodes: CommitNode[],
+    foldedInto: Map<string, string>,
+    runNodes: Map<string, unknown>,
+  ) {
+    const renderId = (oid: string) => foldedInto.get(oid) ?? oid;
+    const m = new Map<string, string>();
+    for (const n of nodes) {
+      const self = renderId(n.oid);
+      const fp = n.parents[0];
+      if (!fp) continue;
+      const fpRender = renderId(fp);
+      if (fpRender === self) continue;
+      const foreign = fpRender !== fp && !runNodes.has(fpRender);
+      if (foreign) continue;
+      if (!m.has(self)) m.set(self, fpRender);
+    }
+    return m;
+  }
+
+  function laneOfMerge(foldedMergePaths: Set<string>) {
+    const { nodes, edges, refs } = fixture();
+    const refsByOid = new Map<string, RefLabel[]>();
+    for (const r of refs) {
+      if (!refsByOid.has(r.oid)) refsByOid.set(r.oid, []);
+      refsByOid.get(r.oid)!.push(r);
+    }
+    const resolved = resolveMergeAndRegionFold(
+      nodes,
+      edges,
+      refsByOid,
+      null,
+      foldedMergePaths,
+      new Set(),
+    );
+    const eff = resolved.eff;
+    // renderOrder: original order, folded members dropped, minted runs emitted.
+    const order: string[] = [];
+    const emitted = new Set<string>();
+    for (const n of nodes) {
+      const runId = eff.foldedInto.get(n.oid);
+      if (runId) {
+        if (eff.runNodes.has(runId) && !emitted.has(runId)) {
+          order.push(runId);
+          emitted.add(runId);
+        }
+      } else {
+        order.push(n.oid);
+      }
+    }
+    const fp = firstParentOf(nodes, eff.foldedInto, eff.runNodes);
+    const trunkTip = eff.foldedInto.get("mainTip") ?? "mainTip";
+    const lanes = assignLanes(order, eff.edges, trunkTip, fp);
+    return { lanes, fside: eff.foldedInto.get("fside") ?? "fside" };
+  }
+
+  it("expanded: merge shares its P1 lane and is off the trunk", () => {
+    const { lanes, fside } = laneOfMerge(new Set());
+    expect(lanes.get("mainTip")).toBe(0);
+    expect(lanes.get("M")).not.toBe(0);
+    expect(lanes.get("M")).toBe(lanes.get(fside));
+  });
+
+  it("folded: merge stays in the SAME lane (no hop into the trunk)", () => {
+    const expanded = laneOfMerge(new Set());
+    const folded = laneOfMerge(new Set([mergePathId("M", 1)]));
+    expect(folded.lanes.get("mainTip")).toBe(0);
+    // The merge did NOT hop into lane 0 when its main-side path collapsed.
+    expect(folded.lanes.get("M")).not.toBe(0);
+    // And it is the same lane as in the expanded view.
+    expect(folded.lanes.get("M")).toBe(expanded.lanes.get("M"));
+  });
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sync vs integration gating: a `sync` secondary side (server-classified — its
+// line continues past the merge) is never auto-folded and offers no fold
+// affordance. An `integration` (dead-end) side behaves as before.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("sync-side fold gating", () => {
+  // Trunk: base -> pm ; feature: base -> f1 -> M ; M merges pm (main) into
+  // feature (P1 = f1 feature side, P2 = pm main side). main then advances, so
+  // P2 is a SYNC side. We attach merge_sides directly (as the server would).
+  function fixture(p2Kind: "sync" | "integration") {
+    const nodes: CommitNode[] = [
+      { ...mk("M", 100, ["f1", "pm"]), merge_sides: [{ parent_index: 1, kind: p2Kind }] },
+      mk("f1", 90, ["base"]),
+      mk("pm", 80, ["base"]),
+      mk("base", 10, []),
+    ];
+    const edges: CommitEdge[] = [
+      { source: "f1", target: "M" },
+      { source: "pm", target: "M" },
+      { source: "base", target: "f1" },
+      { source: "base", target: "pm" },
+    ];
+    // Two leaf tips so leafTipVisibility would otherwise fold a non-leaf side.
+    const refs: RefLabel[] = [
+      { name: "feature", oid: "M", kind: "branch", is_head: true, tip_ts: 100, upstream: null },
+    ];
+    return { nodes, edges, refs };
+  }
+
+  it("isSyncSide reads the server classification", () => {
+    const { nodes } = fixture("sync");
+    expect(isSyncSide(nodes[0], 1)).toBe(true);
+    expect(isSyncSide(nodes[0], 0)).toBe(false);
+    const intg = fixture("integration");
+    expect(isSyncSide(intg.nodes[0], 1)).toBe(false);
+  });
+
+  it("leafTipVisibility does NOT auto-fold a sync side", () => {
+    const { nodes, edges, refs } = fixture("sync");
+    const folded = leafTipVisibility(nodes, edges, refs);
+    expect(folded.has(mergePathId("M", 1))).toBe(false);
+  });
+
+  it("leafTipVisibility still folds an integration (dead-end) side", () => {
+    const { nodes, edges, refs } = fixture("integration");
+    const folded = leafTipVisibility(nodes, edges, refs);
+    expect(folded.has(mergePathId("M", 1))).toBe(true);
+  });
+
+  it("visibleMergeHideGroups offers no affordance for a sync side", () => {
+    const { nodes, edges } = fixture("sync");
+    const groups = visibleMergeHideGroups(nodes, edges, new Set());
+    expect(groups.some((g) => g.mergeOid === "M" && g.parentIndex === 1)).toBe(false);
+  });
+
+  it("visibleMergeHideGroups offers the affordance for an integration side", () => {
+    const { nodes, edges } = fixture("integration");
+    const groups = visibleMergeHideGroups(nodes, edges, new Set());
+    expect(groups.some((g) => g.mergeOid === "M" && g.parentIndex === 1)).toBe(true);
   });
 });

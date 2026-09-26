@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { GitMerge, GitBranch, ChevronsDownUp } from "lucide-react";
+import { GitMerge, GitBranch, ChevronsDownUp, GitPullRequestArrow } from "lucide-react";
 import type { CommitNode, RefLabel } from "../../api/client";
 import type { MergeAffordance } from "./collapse";
 import FoldedRefBadge from "./FoldedRefBadge";
@@ -23,6 +23,14 @@ interface MergeNodeData {
   hiddenGroups: MergeAffordance[];
   /** Fold/expand a specific secondary path, keyed on the stable merge oid. */
   onTogglePath: (mergeOid: string, parentIndex: number, folded: boolean) => void;
+  /**
+   * Sync-side metadata (one per secondary parent classified `sync`): the count
+   * of commits it pulled in and the branch name it synced from. Drives the
+   * non-foldable "synced N from X" badge. Empty for non-sync merges.
+   */
+  syncSides?: { parentIndex: number; count: number; fromName: string | null }[];
+  /** This commit is one of the commits merged in by the selected merge. */
+  highlighted?: boolean;
 }
 
 /**
@@ -53,7 +61,20 @@ function MergeNodeComponent({ data }: NodeProps) {
     onCollapse,
     hiddenGroups,
     onTogglePath,
+    syncSides,
+    highlighted,
   } = data as unknown as MergeNodeData;
+
+  // A merge is a "sync" merge when any secondary parent's line continues past it
+  // (server classification): it pulled in updates from a still-living branch
+  // rather than integrating a finished side branch. Sync sides are not foldable
+  // (they carry no hiddenGroups); we instead style the node distinctly so it
+  // reads as "synced in updates" rather than "collapsible branch".
+  const syncList = syncSides ?? [];
+  const isSync = syncList.length > 0;
+  // Total commits pulled in across sync sides, and the branch synced from.
+  const syncCount = syncList.reduce((n, s) => n + s.count, 0);
+  const syncedFrom = syncList.find((s) => s.fromName)?.fromName ?? null;
 
   const date = new Date(commit.timestamp * 1000);
   const dateStr = date.toLocaleDateString(undefined, {
@@ -69,6 +90,10 @@ function MergeNodeComponent({ data }: NodeProps) {
         "transition-colors duration-100",
         selected
           ? "border-blue-400 bg-blue-950/60 shadow-[0_0_0_2px_rgba(88,166,255,0.3)]"
+          : highlighted
+          ? "border-amber-400/70 bg-[#161b22] shadow-[0_0_0_2px_rgba(251,191,36,0.35)]"
+          : isSync
+          ? "border-sky-700/50 bg-[#161b22] hover:border-sky-400/60"
           : "border-purple-700/50 bg-[#161b22] hover:border-purple-400/60",
       ].join(" ")}
     >
@@ -169,7 +194,15 @@ function MergeNodeComponent({ data }: NodeProps) {
         ].join(" ")}
       >
         <span className="font-mono text-[#8b949e] flex items-center gap-1">
-          <GitMerge size={11} className="text-purple-400/80" aria-label="merge commit" />
+          {isSync ? (
+            <GitPullRequestArrow
+              size={11}
+              className="text-sky-400/80"
+              aria-label="sync merge"
+            />
+          ) : (
+            <GitMerge size={11} className="text-purple-400/80" aria-label="merge commit" />
+          )}
           {commit.short_oid}
         </span>
         <span className="text-[#8b949e]">{dateStr}</span>
@@ -183,6 +216,34 @@ function MergeNodeComponent({ data }: NodeProps) {
       {/* Author */}
       <div className="text-[#8b949e] truncate mt-0.5">{commit.author_name}</div>
 
+      {/* Sync-merge indicator: this merge pulled in updates from a still-living
+          line (a secondary parent whose history continues past the merge — e.g.
+          `main` synced into a feature). It is NOT foldable (hiding a living line
+          is nonsensical), so instead of a fold affordance we show a compact,
+          non-interactive badge with the number of commits it brought in and the
+          branch it synced from. Click the node to highlight those commits. */}
+      {isSync && (
+        <div className="mt-1.5">
+          <Tooltip
+            primary={
+              syncedFrom
+                ? `Synced ${syncCount} commit${syncCount === 1 ? "" : "s"} from ${syncedFrom}`
+                : `Synced ${syncCount} commit${syncCount === 1 ? "" : "s"} in`
+            }
+            secondary="Updates pulled from a branch that keeps going — click to highlight them"
+            placement="top"
+          >
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono leading-4 border bg-sky-950/40 text-sky-300/90 border-sky-700/50 max-w-full">
+              <GitPullRequestArrow size={10} className="shrink-0" />
+              <span>{syncCount}</span>
+              {syncedFrom && (
+                <span className="truncate max-w-[120px]">{syncedFrom}</span>
+              )}
+            </span>
+          </Tooltip>
+        </div>
+      )}
+
       {/* Hidden-branch affordances: one per secondary parent with a non-empty
           hide set. Folded → "reveal" control; expanded → "hide" control. Each
           path also surfaces the refs carried by its hidden members as folded-ref
@@ -191,11 +252,10 @@ function MergeNodeComponent({ data }: NodeProps) {
       {hiddenGroups.length > 0 && (
         <div className="flex flex-col gap-1 mt-1.5">
           {hiddenGroups.map((g) => {
-            // The branch/ref name(s) this secondary path carries — the branch
-            // that merged in. Prefer the head ref; fall back to the first.
-            const fromName =
-              g.foldedRefs.find((fr) => !fr.buried)?.ref.name ??
-              g.foldedRefs[0]?.ref.name;
+            // The branch/ref name this secondary path merged in — from the merge
+            // message ("Merge branch 'X'") first, so it names the branch that
+            // was actually merged, not a ref merely buried in the hidden history.
+            const fromName = g.mergedFrom;
             return (
               <div key={g.id} className="flex flex-wrap items-center gap-1">
                 <Tooltip

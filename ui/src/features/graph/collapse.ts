@@ -342,16 +342,33 @@ export function leafTipVisibility(
   }
 
   // 3. For every merge, fold each secondary path whose hide set contains no leaf
-  //    tip; leave paths whose hide set includes a leaf tip expanded.
+  //    tip; leave paths whose hide set includes a leaf tip expanded. A `sync`
+  //    side (its line continues past the merge — server-classified) is NEVER
+  //    auto-folded: hiding it would tuck away still-living history (e.g. main
+  //    synced into a feature), which is nonsensical.
   const toFold = new Set<string>();
   for (const n of nodes) {
     if (n.parents.length < 2) continue; // not a merge
     for (const group of mergeHideGroups(n.oid, nodes, edges)) {
+      if (isSyncSide(n, group.parentIndex)) continue; // don't fold a living line
       const hasLeaf = group.oids.some((o) => leafTips.has(o));
       if (!hasLeaf) toFold.add(mergePathId(group.mergeOid, group.parentIndex));
     }
   }
   return toFold;
+}
+
+/**
+ * Whether a merge's secondary parent is a `sync` side — its line continues past
+ * the merge into still-living history (server-classified in `CommitNode.
+ * merge_sides`). A sync side is not foldable: hiding it would tuck away mainline
+ * commits. Defaults to `false` (integration / foldable) when no classification
+ * is present, preserving the pre-classification behavior for older payloads.
+ */
+export function isSyncSide(node: CommitNode, parentIndex: number): boolean {
+  return (node.merge_sides ?? []).some(
+    (s) => s.parent_index === parentIndex && s.kind === "sync",
+  );
 }
 
 /**
@@ -396,12 +413,24 @@ export function visibleMergeHideGroups(
   }
 
   // Offer hide groups only for merges that are themselves visible (not hidden
-  // behind a folded enclosing path).
+  // behind a folded enclosing path), AND only for `integration` sides. A
+  // `sync` side's line continues past the merge into still-living history
+  // (e.g. main synced into a feature), so it gets the non-foldable "synced N
+  // from X" badge instead (MergeNodeComponent, driven by `syncSides`, computed
+  // by the caller from the same `merge_sides` classification). It must NOT
+  // also appear here: a sync parent showing both the sync badge AND a manual
+  // fold affordance is a contradictory, doubled-up render of the same
+  // secondary parent, and folding a still-living line is nonsensical
+  // regardless of who triggers the fold. `leafTipVisibility`'s own
+  // `isSyncSide` skip (for the auto-fold seed) is now redundant for sync sides
+  // specifically since they never reach this list at all, but it's left in
+  // place as a harmless no-op guard.
   const visible: MergeHideSet[] = [];
   for (const n of nodes) {
     if (n.parents.length < 2) continue; // not a merge
     if (hidden.has(n.oid)) continue; // merge is itself folded away
     for (const group of mergeHideGroups(n.oid, nodes, edges)) {
+      if (isSyncSide(n, group.parentIndex)) continue; // sync → badge, not affordance
       visible.push(group);
     }
   }
@@ -440,6 +469,64 @@ export function foldedRefsFor(
     }
   });
   return out;
+}
+
+/**
+ * Parse the branch/ref name that a merge commit's SUMMARY records as merged in.
+ * Git's default merge messages name the source explicitly, so this is the most
+ * authoritative "what merged in" signal for a secondary path — more reliable
+ * than scanning the hide set for refs, since a ref buried in the merged-in
+ * branch's history (e.g. `demo-feature` sitting on a commit main absorbed long
+ * ago) is NOT the branch that merged in here.
+ *
+ * Recognised shapes (git's own wording):
+ *   - `Merge branch 'X'`                         → X
+ *   - `Merge branch 'X' into Y`                  → X  (X is the source)
+ *   - `Merge remote-tracking branch 'origin/X'`  → origin/X
+ *   - `Merge tag 'X'`                            → X
+ *   - `Merge pull request #12 from user/X`       → user/X
+ *
+ * Returns null when the summary doesn't match a known pattern (e.g. a squash or
+ * hand-written merge subject), so the caller can fall back.
+ */
+export function mergedBranchName(summary: string): string | null {
+  // `Merge branch 'X'` / `... 'X' into Y` / `Merge remote-tracking branch 'X'`
+  // / `Merge tag 'X'` — the quoted token is the source that merged in.
+  const quoted = summary.match(
+    /^Merge (?:remote-tracking )?(?:branch|tag) '([^']+)'/,
+  );
+  if (quoted) return quoted[1];
+  // `Merge pull request #N from owner/branch` — take the ref after `from`.
+  const pr = summary.match(/^Merge pull request #\d+ from (\S+)/);
+  if (pr) return pr[1];
+  return null;
+}
+
+/**
+ * The best available name for the branch that merged in on a secondary path,
+ * in priority order:
+ *   1. the merge summary's recorded source (`mergedBranchName`) — git's own
+ *      record of what was merged, immune to the merged-in branch's tip moving on;
+ *   2. a branch / remote-branch ref pointing EXACTLY at the secondary parent Pk
+ *      (the tip that was merged, when it hasn't advanced past the merge);
+ *   3. the head (non-buried) ref carried anywhere on the hidden path, else its
+ *      first ref — the loosest signal, used only when 1 and 2 give nothing.
+ * Returns null when no name can be determined. Pure and DOM-free.
+ */
+export function mergedFromName(
+  mergeSummary: string,
+  secondaryParent: string,
+  foldedRefs: FoldedRef[],
+  refsByOid: Map<string, RefLabel[]>,
+): string | null {
+  const fromMessage = mergedBranchName(mergeSummary);
+  if (fromMessage) return fromMessage;
+  const tipRef = (refsByOid.get(secondaryParent) ?? []).find(
+    (r) => r.kind === "branch" || r.kind === "remotebranch",
+  );
+  if (tipRef) return tipRef.name;
+  const head = foldedRefs.find((fr) => !fr.buried)?.ref.name;
+  return head ?? foldedRefs[0]?.ref.name ?? null;
 }
 
 export interface CollapsedRunData {
@@ -1205,6 +1292,12 @@ export function applyCollapse(
  * (expanded branch tips / the rest of the shown graph) into a single rollup
  * group. The result plugs straight into `applyCollapse` (as `Run[]`).
  *
+ * A commit currently serving as a `sync` side's introduced set (still-living
+ * history pulled into a merge — `isSyncSide`) is excluded from every rollup,
+ * same protection as `visibleMergeHideGroups`: a branch collapse must not
+ * silently swallow commits a merge node is depending on to render its sync
+ * badge.
+ *
  * @param nodes           loaded commit nodes
  * @param edges           parent(source)→child(target) edges
  * @param collapsedTips   [branchName, tipOid] for each COLLAPSED branch
@@ -1241,6 +1334,24 @@ export function detectBranchRollups(
   // Commits kept visible by expanded branches — never fold these.
   const expandedReach = ancestorsOf(expandedTips);
 
+  // Commits currently protected as a `sync` side's introduced set (a still-
+  // living line pulled into a merge — e.g. main synced into a feature). Same
+  // protection as `visibleMergeHideGroups`/`isSyncSide`, applied here too:
+  // this is an independent fold mechanism (collapse-by-branch-name) with no
+  // other awareness of merge classification, so without this it could roll a
+  // live sync side into an anonymous branch-rollup summary just as easily as
+  // the merge-affordance path could fold it — same bug, different door. Not
+  // currently reachable (nothing wires `collapsedTips` yet), but cheap to
+  // guard now rather than rediscover this later once it is.
+  const syncProtected = new Set<string>();
+  for (const n of nodes) {
+    if (n.parents.length < 2) continue; // not a merge
+    for (const group of mergeHideGroups(n.oid, nodes, edges)) {
+      if (!isSyncSide(n, group.parentIndex)) continue;
+      for (const oid of group.oids) syncProtected.add(oid);
+    }
+  }
+
   // Order lookup (newest-first) so each rollup's oids stay in graph order.
   const orderIndex = new Map(nodes.map((n, i) => [n.oid, i]));
 
@@ -1253,7 +1364,8 @@ export function detectBranchRollups(
     if (!inGraph.has(tip)) continue;
     const branchReach = ancestorsOf([tip]);
     const unique = [...branchReach].filter(
-      (oid) => !expandedReach.has(oid) && !claimed.has(oid),
+      (oid) =>
+        !expandedReach.has(oid) && !claimed.has(oid) && !syncProtected.has(oid),
     );
     if (unique.length < 2) continue;
     unique.sort((a, b) => (orderIndex.get(a)! - orderIndex.get(b)!)); // newest-first
@@ -1363,6 +1475,14 @@ export interface MergeAffordance {
    * `group.oids` order (Requirements 16.2/17). Empty ⇒ no folded-ref badge.
    */
   foldedRefs: FoldedRef[];
+  /**
+   * The name of the branch/ref that merged in on this path — from the merge's
+   * own summary ("Merge branch 'X'"), else a ref on the secondary parent tip,
+   * else a ref carried on the path. Null when undeterminable. This is the
+   * accurate "what merged in" label; a ref merely buried in the hidden history
+   * (e.g. a downstream branch the merged-in line had long absorbed) is NOT it.
+   */
+  mergedFrom: string | null;
 }
 
 /** Result of the composed merge + region fold resolution. */
@@ -1476,6 +1596,7 @@ export function resolveMergeAndRegionFold(
   const affordancesByMerge = new Map<string, MergeAffordance[]>();
   for (const group of visibleMergeHideGroups(nodes, edges, foldedMergePathIds)) {
     const id = mergePathId(group.mergeOid, group.parentIndex);
+    const foldedRefs = foldedRefsFor(group.oids, refsByOid);
     const entry: MergeAffordance = {
       parentIndex: group.parentIndex,
       id,
@@ -1483,7 +1604,15 @@ export function resolveMergeAndRegionFold(
       folded: foldedMergePathIds.has(id),
       // Refs carried by this path's hidden members, head-vs-buried by group.oids
       // order (newest-first, so oids[0] is the head member) — Req 16.2/17.
-      foldedRefs: foldedRefsFor(group.oids, refsByOid),
+      foldedRefs,
+      // Accurate "what merged in" name: the merge summary's recorded source
+      // first, then a ref on the secondary parent tip, then the path's head ref.
+      mergedFrom: mergedFromName(
+        nodeByOid.get(group.mergeOid)?.summary ?? "",
+        group.secondaryParent,
+        foldedRefs,
+        refsByOid,
+      ),
     };
     if (!affordancesByMerge.has(group.mergeOid)) {
       affordancesByMerge.set(group.mergeOid, []);

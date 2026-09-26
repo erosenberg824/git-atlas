@@ -19,6 +19,7 @@ import SpecialNodeComponent from "./SpecialNodeComponent";
 import RunNodeComponent from "./RunNodeComponent";
 import MergeNodeComponent from "./MergeNodeComponent";
 import { pickEdgePorts } from "./edgePorts";
+import { estimateNodeHeight, computeRowTops, assignRows, ROW_GAP } from "./nodeLayout";
 import {
   regionAround,
   foldableNodeIds,
@@ -28,6 +29,7 @@ import {
   parseMergePathId,
   mergePathId,
   mergeSecondaryPath,
+  mergedBranchName,
   anchorFromId,
   selectionForSummaryNode,
   leafTipVisibility,
@@ -58,6 +60,12 @@ interface CommitGraphProps {
    * side-branches behind their merge nodes; `"full"` expands the whole DAG.
    */
   viewMode?: ViewMode;
+  /**
+   * Name of the branch pinned to lane 0 (the trunk / mainline column). When
+   * unset, defaults to `main`, then `master`, then HEAD. Lets the user choose
+   * which branch reads as the straight left spine.
+   */
+  trunkBranch?: string | null;
 }
 
 /** Synthetic node id for the working-tree (working + staged) pseudo-node. */
@@ -76,20 +84,35 @@ const nodeTypes: NodeTypes = {
 };
 
 /**
- * Assign each rendered item (commit OR summary/run node) a lane (column).
+ * Assign each rendered item (commit OR summary/run node) a lane (column) using
+ * the **leaf-seeded lane-reuse ("transit-map") model**.
  *
- * Improvements over the old algorithm:
- *  - **Tight packing**: when a branch ends its lane is reclaimed and the lowest
- *    free lane is always reused, so total width = max *concurrent* branches, not
- *    the total number of branches (fixes the graph "fanning out").
- *  - **Trunk in lane 0**: the first-parent chain from the trunk tip (HEAD) is
- *    pinned to lane 0, giving a straight mainline on the left.
- *  - **Summary-node aware**: operates over `order` (the combined render order of
- *    commit oids and summary/run node ids) using `edges` already rewritten to
- *    reference those ids, so rollup nodes are first-class.
+ * Mental model: lanes are seeded from LEAF commits (a rendered commit no
+ * rendered child inherits from), NOT from refs. Walking DOWN (newest→oldest) a
+ * commit passes its lane to its FIRST parent, so a leaf plus its first-parent
+ * ancestry form one continuous run in one lane. A merge is a JUNCTION: its
+ * non-first parents are their OWN runs in their OWN lanes (the merge draws a
+ * crossing edge into them); nothing stops or folds. When two runs converge on a
+ * shared ancestor (a parent already reserved a lane), the current run's lane is
+ * FREED and reused by a later (lower) leaf — so lane count tracks CONCURRENT
+ * runs, not total branches, and the graph never fans out unboundedly.
  *
- * `order` is newest-first (topological). `edges` are parent(source)→child(target)
- * among rendered ids. `trunkTip` is the id that should anchor lane 0.
+ * Refs are LABELS, not what creates lanes: this is topology-driven. `trunkTip`
+ * is an OPTIONAL readability anchor only — the run seeded from it is pinned to
+ * lane 0 (so the mainline is a straight left column) by reserving lane 0 for it
+ * up front. Because a run flows P1→P1, lane 0 propagates down the trunk tip's
+ * first-parent chain through the SAME hand-off every other run uses — there is
+ * no trunk "membership" concept and no special-casing of merges. A merge simply
+ * lands in its P1's lane like any first-parent continuation. Pass `null` for
+ * pure leaf-seeded layout with no lane-0 preference.
+ *
+ * Determinism: `order` is the caller's fixed newest-first topological order, and
+ * lanes are always the lowest free column, so the layout is stable for a given
+ * window (the notes' "seed leaves in fixed order" requirement is satisfied by
+ * the caller ordering nodes by timestamp then oid).
+ *
+ * Operates over `order` (commit oids AND summary/run node ids) with `edges`
+ * already rewritten to those ids, so rollup nodes are first-class.
  */
 export function assignLanes(
   order: string[],
@@ -100,77 +123,133 @@ export function assignLanes(
   const lanes = new Map<string, number>();
   const rendered = new Set(order);
 
-  // child(source=parent) → [children], and child(target) → [parents], rendered-only.
-  const childrenOf = new Map<string, string[]>();
+  // parent(target) → [parents], rendered-only, preserving the caller's edge
+  // order so "first parent" stays consistent with `firstParentOf`.
   const parentsOf = new Map<string, string[]>();
   for (const e of edges) {
     if (!rendered.has(e.source) || !rendered.has(e.target)) continue;
-    if (!childrenOf.has(e.source)) childrenOf.set(e.source, []);
-    childrenOf.get(e.source)!.push(e.target);
     if (!parentsOf.has(e.target)) parentsOf.set(e.target, []);
     parentsOf.get(e.target)!.push(e.source);
   }
 
-  // Trunk = first-parent chain from the trunk tip; pinned to lane 0.
-  const trunkSet = new Set<string>();
-  if (trunkTip && rendered.has(trunkTip)) {
-    let cur: string | undefined = trunkTip;
-    while (cur && rendered.has(cur) && !trunkSet.has(cur)) {
-      trunkSet.add(cur);
-      cur = firstParentOf.get(cur);
-    }
-  }
-  const hasTrunk = trunkSet.size > 0;
+  // Lane 0 is reserved for the trunk run when a trunk tip is given and rendered;
+  // every other run then starts at lane >= 1, so the trunk stays a straight left
+  // column. This is the ONLY trunk special-casing: pre-reserve lane 0 for the
+  // trunk tip's run. There is NO trunk membership set and NO merge special-casing
+  // in the main pass — a merge simply lands in its P1's lane (enforced by the
+  // post-pass below), which is stable whether side branches are folded or not.
+  const hasTrunk = trunkTip !== null && rendered.has(trunkTip);
+  const minLane = hasTrunk ? 1 : 0;
 
-  // activeLanes[i] = id currently occupying lane i (awaiting its parent), or null.
-  const activeLanes: (string | null)[] = [];
-  const claimLowestFree = (from: number): number => {
-    for (let i = from; i < activeLanes.length; i++) {
-      if (activeLanes[i] === null) return i;
+  // laneBusy[i] = true while lane i is claimed by a run that has not yet reached
+  // the commit it was reserved for.
+  const laneBusy: boolean[] = [];
+  const claimLowestFree = (): number => {
+    for (let i = minLane; i < laneBusy.length; i++) {
+      if (!laneBusy[i]) {
+        laneBusy[i] = true;
+        return i;
+      }
     }
-    activeLanes.push(null);
-    return activeLanes.length - 1;
+    laneBusy.push(true);
+    return laneBusy.length - 1;
   };
 
+  // reservedLane[id] = the lane a not-yet-processed commit already owns because
+  // a child handed its run down to it (first-parent continuation) or because it
+  // is a merge's non-first parent that opened its own run. Ensures a commit
+  // reachable as a parent from several places keeps ONE lane (the first claim).
+  const reservedLane = new Map<string, number>();
+
+  // Pre-reserve lane 0 for the trunk tip's run.
+  if (hasTrunk) {
+    reservedLane.set(trunkTip as string, 0);
+    laneBusy[0] = true;
+  }
+
   for (const id of order) {
-    const kids = childrenOf.get(id) ?? [];
-    let lane = -1;
-
-    if (trunkSet.has(id)) {
-      lane = 0;
+    let lane: number;
+    if (reservedLane.has(id)) {
+      // A child already handed this commit its run's lane (P1 continuation), or
+      // this is the pre-reserved trunk tip (lane 0).
+      lane = reservedLane.get(id)!;
     } else {
-      // Reuse a child's lane ONLY if this commit is that child's FIRST parent
-      // (the mainline continuation). A merge's 2nd+ parents must NOT inherit the
-      // merge's lane — they branch into their own lane. This is what keeps merge
-      // side-branches in a separate column instead of stacking on the trunk.
-      for (let i = 0; i < activeLanes.length; i++) {
-        const occupant = activeLanes[i];
-        if (occupant !== null && kids.includes(occupant) && firstParentOf.get(occupant) === id) {
-          lane = i;
-          break;
-        }
-      }
-      if (lane === -1) lane = claimLowestFree(hasTrunk ? 1 : 0);
+      // No child reached here first → this is a leaf (in this window). Seed a
+      // fresh run in the lowest free lane.
+      lane = claimLowestFree();
     }
-
-    // Reclaim lanes held by this node's OTHER children (merged branches collapse
-    // back), freeing their columns for reuse below this row.
-    for (let i = 0; i < activeLanes.length; i++) {
-      if (i !== lane && activeLanes[i] !== null && kids.includes(activeLanes[i]!)) {
-        activeLanes[i] = null;
-      }
-    }
-
+    reservedLane.delete(id);
     lanes.set(id, lane);
-    while (activeLanes.length <= lane) activeLanes.push(null);
-    activeLanes[lane] = id;
+    while (laneBusy.length <= lane) laneBusy.push(false);
+
+    // Hand this commit's run DOWN to its first parent; open new runs for the
+    // rest. `parentsOf` order matches the edge/first-parent convention.
+    const parents = parentsOf.get(id) ?? [];
+    const fp = firstParentOf.get(id);
+    let firstParentKept = false;
+    for (const parent of parents) {
+      const alreadyReserved = reservedLane.has(parent);
+      if (parent === fp && !firstParentKept) {
+        if (alreadyReserved) {
+          // The first parent already owns a lane (two runs converge here). If
+          // THIS run is the trunk (lane 0), the trunk wins so the mainline stays
+          // a straight lane-0 spine; otherwise our run ends here and frees below.
+          if (lane === 0) {
+            const old = reservedLane.get(parent)!;
+            if (old !== 0) {
+              laneBusy[old] = false;
+              reservedLane.set(parent, 0);
+              laneBusy[0] = true;
+            }
+            firstParentKept = true;
+          }
+          continue;
+        }
+        // First parent continues THIS run straight down in the SAME lane.
+        reservedLane.set(parent, lane);
+        firstParentKept = true;
+      } else {
+        if (alreadyReserved) continue; // parent already has a lane
+        // A non-first parent is its own run → its own new lane (a junction).
+        reservedLane.set(parent, claimLowestFree());
+      }
+    }
+
+    // If this commit's run did not continue into a first parent (it's a root, or
+    // its first parent already had a lane), free the lane for reuse below. Lane
+    // 0 (trunk) is never freed for reuse so the mainline column stays reserved.
+    if (!firstParentKept && lane !== 0) laneBusy[lane] = false;
+  }
+
+  // ── Merge → P1 lane binding (the one rule that matters for merges) ─────────
+  // A merge commit must sit in the SAME lane as its first parent. In the main
+  // pass a commit's lane comes from whichever CHILD reached it first, so a merge
+  // whose feature-side child is folded away (or absent in this window) can drift
+  // into a different lane between the collapsed and expanded views — the
+  // lane-hopping. Binding the merge's lane to its P1's lane here makes it stable:
+  // P1 is a single deterministic commit whose own lane does not depend on which
+  // side branches are folded. We resolve in `order` (newest-first) so a chain of
+  // merges settles top-down. This is intentionally the LAST word on a merge's
+  // lane, overriding the child-derived value.
+  for (const id of order) {
+    const parents = parentsOf.get(id) ?? [];
+    if (parents.length < 2) continue; // not a merge
+    const fp = firstParentOf.get(id);
+    if (fp === undefined) continue;
+    const p1Lane = lanes.get(fp);
+    if (p1Lane !== undefined) lanes.set(id, p1Lane);
   }
 
   return lanes;
 }
 
-// Node card is ~110px tall at its largest (padding + ref badges + hash/date +
-// summary + author). Keep ROW_HEIGHT comfortably above that so rows never overlap.
+// Node card is variable-height (ref badges, merge affordances, stash badges,
+// folded-ref badges all grow it). Row Y positions are computed height-aware in
+// `computeRowTops` (see nodeLayout.ts) so a tall card never overlaps the row
+// below, while the GAP between rows stays constant (uniform parent→child
+// spacing). ROW_HEIGHT remains only as the fallback row pitch used by the
+// pseudo-node placement helpers when no explicit per-row Y resolver is given
+// (e.g. in unit tests that work purely in grid space).
 const ROW_HEIGHT = 120;
 // Lane spacing must exceed the widest node card (special/run cards are up to
 // 210px, commit/merge up to 200px) plus a gap, or adjacent-lane cards overlap
@@ -211,6 +290,7 @@ export function placeAboveBase(
   rowOf: Map<string, number>,
   laneOf: Map<string, number>,
   reserved: Set<string>,
+  yForRow?: (row: number) => number,
 ): WorkingPlacement | null {
   if (!baseOid) return null;
   const baseRow = rowOf.get(baseOid);
@@ -224,12 +304,15 @@ export function placeAboveBase(
   while (reserved.has(`${lane},${targetRow}`)) lane++;
   reserved.add(`${lane},${targetRow}`);
 
+  // Y is height-aware when a resolver is supplied (the real graph), else falls
+  // back to the fixed row pitch (grid-space unit tests).
+  const y = yForRow ? yForRow(targetRow) : Y_BASE + targetRow * ROW_HEIGHT;
   return {
     lane,
     row: targetRow,
     offset: lane !== baseLane,
     x: X_BASE + lane * LANE_WIDTH,
-    y: Y_BASE + targetRow * ROW_HEIGHT,
+    y,
   };
 }
 
@@ -260,8 +343,9 @@ export function computeWorkingPlacement(
   headOid: string | null,
   rowOf: Map<string, number>,
   laneOf: Map<string, number>,
+  yForRow?: (row: number) => number,
 ): WorkingPlacement | null {
-  return placeAboveBase(headOid, rowOf, laneOf, reservedCellsFrom(rowOf, laneOf));
+  return placeAboveBase(headOid, rowOf, laneOf, reservedCellsFrom(rowOf, laneOf), yForRow);
 }
 
 export default function CommitGraph({
@@ -272,6 +356,7 @@ export default function CommitGraph({
   jumpToOid,
   onJumpConsumed,
   viewMode = "active",
+  trunkBranch = null,
 }: CommitGraphProps) {
   const refsByOid = useMemo(() => {
     const map = new Map<string, RefLabel[]>();
@@ -311,6 +396,33 @@ export default function CommitGraph({
   // branches" switch can live in the left scope overlay.
   const [userCollapsed, setUserCollapsed] = useState<Set<string>>(new Set());
   const [userExpanded, setUserExpanded] = useState<Set<string>>(new Set());
+
+  // Flipping the "Collapse merged branches" switch (viewMode) should visibly
+  // re-assert the DEFAULT fold state for every merge — otherwise a merge the
+  // user has manually folded/expanded is pinned by its override and the switch
+  // appears to do nothing (the user's "manual hide/show is conflicting" report).
+  // So on a genuine view-mode change we DROP the user's MERGE-PATH overrides
+  // (ids matching `isMergePathId`), letting the toggle's mergeSeed take over for
+  // all merges. Region-fold overrides are unrelated to the switch and are kept.
+  const prevViewMode = useRef<ViewMode>(viewMode);
+  useEffect(() => {
+    if (prevViewMode.current === viewMode) return;
+    prevViewMode.current = viewMode;
+    const dropMergePaths = (prev: Set<string>) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (isMergePathId(id)) {
+          changed = true;
+          continue;
+        }
+        next.add(id);
+      }
+      return changed ? next : prev;
+    };
+    setUserCollapsed(dropMergePaths);
+    setUserExpanded(dropMergePaths);
+  }, [viewMode]);
 
   const nodeByOid = useMemo(() => {
     const m = new Map<string, CommitNode>();
@@ -447,6 +559,49 @@ export default function CommitGraph({
   );
 
   const collapsed = resolved.eff;
+
+  // ── Click-to-highlight merged commits ─────────────────────────────────────
+  // When the selected node is a MERGE, highlight the commits it merged in: the
+  // union of every secondary parent's introduced set (`reachable(Pk) \
+  // reachable(P1)`), computed with the SAME `mergeSecondaryPath` used for the
+  // fold hide sets — so it works for sync merges (not foldable) and integration
+  // merges alike. Highlighted commits get a ring in the node components. Only
+  // the members that are currently rendered light up; folded-away ones stay
+  // hidden (their fold summary still highlights via its own membership).
+  const highlightedOids = useMemo(() => {
+    const set = new Set<string>();
+    if (!selectedOid) return set;
+    const sel = nodeByOid.get(selectedOid);
+    if (!sel || sel.parents.length < 2) return set;
+    for (let k = 1; k < sel.parents.length; k++) {
+      const path = mergeSecondaryPath(selectedOid, k, graph.nodes, graph.edges);
+      if (path) for (const o of path.oids) set.add(o);
+    }
+    return set;
+  }, [selectedOid, nodeByOid, graph.nodes, graph.edges]);
+
+  // Per-merge SYNC-side metadata for the merge node badge: the introduced-commit
+  // count for each secondary parent classified `sync` (server `merge_sides`).
+  // Sync sides carry no fold affordance, so the node can't read the count off
+  // `hiddenGroups`; we compute it here from `mergeSecondaryPath` (the same
+  // reachable-difference used everywhere else), keyed by merge oid.
+  const syncSidesByMerge = useMemo(() => {
+    const m = new Map<string, { parentIndex: number; count: number; fromName: string | null }[]>();
+    for (const n of graph.nodes) {
+      const sides = (n.merge_sides ?? []).filter((s) => s.kind === "sync");
+      if (sides.length === 0) continue;
+      const entries = sides.map((s) => {
+        const path = mergeSecondaryPath(n.oid, s.parent_index, graph.nodes, graph.edges);
+        return {
+          parentIndex: s.parent_index,
+          count: path?.oids.length ?? 0,
+          fromName: mergedBranchName(n.summary),
+        };
+      });
+      m.set(n.oid, entries);
+    }
+    return m;
+  }, [graph.nodes, graph.edges]);
 
   // Effective edge list + region summary nodes after collapsing — everything
   // downstream (lanes, positions, flow nodes/edges) operates on these.
@@ -602,6 +757,16 @@ export default function CommitGraph({
   // by the lane algorithm so a merge's 2nd+ parents branch into their own lane
   // instead of inheriting the merge's lane. A commit's first parent is
   // graph parents[0], mapped through any collapse fold to its render id.
+  //
+  // Crucial exception for lane stability: when a commit's real first parent was
+  // folded into a FOREIGN existing commit (an Option-A merge fold, where the
+  // render anchor is another commit's oid — e.g. main's `06d07b2` folded into
+  // the feature-side merge `fbea557`), that is NOT a first-parent continuation
+  // for layout. Treating it as one would route the trunk run THROUGH that merge
+  // and drag the merge into the trunk lane when the branch collapses (the
+  // lane-hopping). We only follow the fold when the first parent maps to ITSELF
+  // (rendered normally) or to a MINTED run/summary node that represents this
+  // commit's own folded first-parent line. Otherwise the run simply ends here.
   const firstParentOf = useMemo(() => {
     const renderId = (oid: string) => collapsed.foldedInto.get(oid) ?? oid;
     const m = new Map<string, string>();
@@ -610,23 +775,70 @@ export default function CommitGraph({
       const fp = n.parents[0];
       if (!fp) continue;
       const fpRender = renderId(fp);
-      if (fpRender !== self && !m.has(self)) m.set(self, fpRender);
+      if (fpRender === self) continue;
+      // Skip first-parent continuation into a foreign Option-A merge anchor: the
+      // first parent folded into an EXISTING different commit, not a minted run
+      // node. `collapsed.runNodes` holds only minted summary/run ids, so a
+      // fpRender that is NOT a run node but differs from the real first parent
+      // means the parent was absorbed by a foreign commit anchor — not our run.
+      const foldedIntoForeignCommit =
+        fpRender !== fp && !collapsed.runNodes.has(fpRender);
+      if (foldedIntoForeignCommit) continue;
+      if (!m.has(self)) m.set(self, fpRender);
     }
     return m;
-  }, [graph.nodes, collapsed.foldedInto]);
+  }, [graph.nodes, collapsed.foldedInto, collapsed.runNodes]);
+
+  // The single trunk-tip RENDER ID pinned to lane 0. The trunk is a user-chosen
+  // branch (the `trunkBranch` prop, default main/master); we resolve its NAME to
+  // its tip oid from the ref labels, then map that oid through the current fold
+  // to its render id (an original commit that folded into a run node carries the
+  // lane-0 anchor onto that run node). Falls back to HEAD, then the newest node,
+  // so there is always a sensible lane-0 spine. This is the ONLY trunk input to
+  // layout — `assignLanes` reserves lane 0 for this run and lets it propagate
+  // down its first-parent chain; there is no trunk membership set and no merge
+  // special-casing (a merge just lands in its P1's lane).
+  const trunkTipRender = useMemo(() => {
+    const nameMatch = (want: string) =>
+      graph.refs.find(
+        (r) => (r.kind === "branch" || r.kind === "remotebranch") && r.name === want,
+      )?.oid;
+    // 1) explicit chosen branch, 2) main, 3) master, 4) HEAD, 5) newest node.
+    const tipOid =
+      (trunkBranch ? nameMatch(trunkBranch) : undefined) ??
+      nameMatch("main") ??
+      nameMatch("master") ??
+      headOid ??
+      graph.nodes[0]?.oid ??
+      null;
+    if (!tipOid) return null;
+    // Map through the fold so a folded trunk tip still anchors lane 0 on its
+    // render node.
+    return collapsed.foldedInto.get(tipOid) ?? tipOid;
+  }, [graph.refs, graph.nodes, trunkBranch, headOid, collapsed.foldedInto]);
 
   const lanes = useMemo(
-    () => assignLanes(renderOrder, effEdges, headOid, firstParentOf),
+    () => assignLanes(renderOrder, effEdges, trunkTipRender, firstParentOf),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [renderOrder, effEdges, headOid, firstParentOf]
+    [renderOrder, effEdges, trunkTipRender, firstParentOf]
   );
 
-  // Row index of each rendered id (commit oid OR run id).
-  const indexByOid = useMemo(() => {
-    const m = new Map<string, number>();
-    renderOrder.forEach((id, i) => m.set(id, i));
-    return m;
-  }, [renderOrder]);
+  // Row (vertical level) of each rendered id — derived from the DAG topology so
+  // a parent hugs its lowest child (one row below), NOT from the flat order.
+  // This prevents lane 0 (trunk) from leaving tall empty gaps opposite stacks of
+  // unrelated side-lane nodes: rows now count DEPTH, and same-depth nodes in
+  // different lanes share a row. See `assignRows`.
+  const indexByOid = useMemo(
+    () => assignRows(renderOrder, effEdges),
+    [renderOrder, effEdges],
+  );
+
+  // Number of distinct rows (max row index + 1).
+  const rowCount = useMemo(() => {
+    let max = -1;
+    for (const r of indexByOid.values()) if (r > max) max = r;
+    return max + 1;
+  }, [indexByOid]);
 
   // ── Stash badges ──────────────────────────────────────────────────────────
   // A stash is not a ref pointing at a commit; it's a set of changes layered on
@@ -671,10 +883,77 @@ export default function CommitGraph({
     [selectedOid],
   );
 
+  // ── Height-aware row Y positions ────────────────────────────────────────
+  // Each row's Y is the running sum of the PREVIOUS rows' heights plus a
+  // constant gap, so a tall card (many ref badges / merge affordances / a stash
+  // badge / folded refs) can never overlap the row below it, while the gap
+  // between rows stays constant (uniform spacing). A row can hold several nodes
+  // (one per lane), so a row's height is the MAX estimated card height across
+  // every node assigned to that row (`indexByOid`). Height is estimated per node
+  // from its data (DOM-free, deterministic) via `estimateNodeHeight`.
+  const rowTops = useMemo(() => {
+    const heightOf = (id: string): number => {
+      const runData = runNodes.get(id);
+      if (runData) {
+        return estimateNodeHeight({
+          kind: "run",
+          foldedRefLabels: (runData.foldedRefs ?? []).map((fr) => fr.ref.name),
+        });
+      }
+      const commit = nodeByOid.get(id);
+      if (!commit) return estimateNodeHeight({ kind: "commit" });
+      const isMerge = commit.parents.length >= 2;
+      const refLabels = (refsByOid.get(id) ?? []).map((r) => r.name);
+      if (isMerge) {
+        const affordances = resolved.affordancesByMerge.get(id) ?? [];
+        return estimateNodeHeight({
+          kind: "merge",
+          refLabels,
+          affordanceCount: affordances.length,
+          foldedRefLabels: affordances
+            .filter((a) => a.folded)
+            .flatMap((a) => a.foldedRefs.map((fr) => fr.ref.name)),
+        });
+      }
+      return estimateNodeHeight({
+        kind: "commit",
+        refLabels,
+        hasStash: (stashesByBase.get(id)?.length ?? 0) > 0,
+      });
+    };
+    // Max card height per row across all lanes occupying that row.
+    const rowHeights = new Array<number>(rowCount).fill(0);
+    for (const id of renderOrder) {
+      const row = indexByOid.get(id);
+      if (row === undefined) continue;
+      const h = heightOf(id);
+      if (h > rowHeights[row]) rowHeights[row] = h;
+    }
+    // A row with no measurable node still needs a sane default height.
+    const base = estimateNodeHeight({ kind: "commit" });
+    for (let i = 0; i < rowHeights.length; i++) {
+      if (rowHeights[i] === 0) rowHeights[i] = base;
+    }
+    return computeRowTops(rowHeights, Y_BASE);
+  }, [renderOrder, indexByOid, rowCount, runNodes, nodeByOid, refsByOid, resolved.affordancesByMerge, stashesByBase]);
+
+  // Resolve the absolute top Y of a row index. Rows at or below 0 use the
+  // computed height-aware tops; a row ABOVE the topmost node (index -1, where
+  // the working node sits when HEAD is the newest commit) is derived by
+  // stepping one working-node height + gap above row 0 so it never overlaps it.
+  const yForRow = useCallback(
+    (row: number) => {
+      if (row >= 0) return rowTops[row] ?? Y_BASE + row * ROW_HEIGHT;
+      const specialH = estimateNodeHeight({ kind: "special" });
+      return (rowTops[0] ?? Y_BASE) - (specialH + ROW_GAP) * -row;
+    },
+    [rowTops],
+  );
+
   const flowNodes: Node[] = useMemo(
     () =>
-      renderOrder.map((id, index) => {
-        const y = Y_BASE + index * ROW_HEIGHT;
+      renderOrder.map((id) => {
+        const y = yForRow(indexByOid.get(id) ?? 0);
         const runData = runNodes.get(id);
         if (runData) {
           // Collapsed run summary node.
@@ -714,6 +993,12 @@ export default function CommitGraph({
             // non-empty hide set → no affordance rendered).
             hiddenGroups,
             onTogglePath,
+            // Sync-side badge metadata (introduced count + branch name) for
+            // merges that pulled in a still-living line. Empty for non-syncs.
+            syncSides: syncSidesByMerge.get(id) ?? [],
+            // Highlight ring: this commit is one of the commits merged in by the
+            // currently-selected merge (click-to-highlight).
+            highlighted: highlightedOids.has(id),
             // Compact stash badge: the stashes based on THIS commit, and
             // whether one of them is the current selection (so the badge shades
             // as active). Clicking selects a stash → drives the StashPanel diff.
@@ -726,7 +1011,7 @@ export default function CommitGraph({
         } as Node;
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [renderOrder, lanes, refsByOid, selectedOid, onSelectCommit, runNodes, nodeByOid, effEdges, regionEligible, onCollapseNode, expandRegion, resolved.affordancesByMerge, onTogglePath, stashesByBase, selectedStashIndex]
+    [renderOrder, lanes, indexByOid, yForRow, refsByOid, selectedOid, onSelectCommit, runNodes, nodeByOid, effEdges, regionEligible, onCollapseNode, expandRegion, resolved.affordancesByMerge, onTogglePath, stashesByBase, selectedStashIndex, syncSidesByMerge, highlightedOids]
   );
 
   // Working-tree pseudo-node placement (shared by the node and its edge). It
@@ -737,9 +1022,10 @@ export default function CommitGraph({
   // lane at or to the RIGHT of HEAD's lane. If HEAD is a leaf its own lane is
   // free and the node sits straight above, as before. `offset` is true when the
   // node ended up right of HEAD (used to route the edge through HEAD's side).
+  // `yForRow` keeps its Y aligned to the height-aware row tops.
   const workingPlacement = useMemo(
-    () => computeWorkingPlacement(headOid, indexByOid, lanes),
-    [headOid, indexByOid, lanes],
+    () => computeWorkingPlacement(headOid, indexByOid, lanes, yForRow),
+    [headOid, indexByOid, lanes, yForRow],
   );
 
   // Stash pseudo-node placements. Each stash "grows out of" its base commit
@@ -765,10 +1051,10 @@ export default function CommitGraph({
       const base = stash.base_oid && indexByOid.has(stash.base_oid)
         ? stash.base_oid
         : null;
-      map.set(stash.index, placeAboveBase(base, indexByOid, lanes, reserved));
+      map.set(stash.index, placeAboveBase(base, indexByOid, lanes, reserved, yForRow));
     });
     return map;
-  }, [status, workingPlacement, indexByOid, lanes, visibleStashIndices]);
+  }, [status, workingPlacement, indexByOid, lanes, visibleStashIndices, yForRow]);
 
   // Working-tree pseudo-node (working + staged) + one node per stash.
   const specialNodes: Node[] = useMemo(() => {
@@ -829,22 +1115,32 @@ export default function CommitGraph({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, workingPlacement, stashPlacements, visibleStashIndices, indexByOid, lanes, selectedOid, onSelectCommit]);
 
-  const flowEdges: Edge[] = useMemo(
-    () =>
-      effEdges
-        // Defensive: React Flow throws (blanking the whole canvas) if an edge
-        // references a node that isn't present. Drop any such dangling edges.
-        .filter((e) => indexByOid.has(e.source) && indexByOid.has(e.target))
-        .map((e) => {
+  const flowEdges: Edge[] = useMemo(() => {
+    // Occupancy grid of `lane,row` cells that hold a node, so `pickEdgePorts`
+    // can route an edge through a VERTICAL port only when the column between the
+    // two endpoints is actually empty — otherwise it enters/leaves through the
+    // facing SIDE and the line never runs behind a stacked card.
+    const occupied = new Set<string>();
+    for (const [id, row] of indexByOid) {
+      occupied.add(`${lanes.get(id) ?? 0},${row}`);
+    }
+    const isOccupied = (lane: number, row: number) => occupied.has(`${lane},${row}`);
+
+    return effEdges
+      // Defensive: React Flow throws (blanking the whole canvas) if an edge
+      // references a node that isn't present. Drop any such dangling edges.
+      .filter((e) => indexByOid.has(e.source) && indexByOid.has(e.target))
+      .map((e) => {
         // source = parent (lower on screen), target = child (higher on screen).
         // `lanes` now covers commits AND summary nodes, so a plain lookup works.
         // Port selection is delegated to `pickEdgePorts`, which chooses the
-        // source/target handles purely from the two nodes' relative grid
-        // positions (see edgePorts.ts) so each end connects through the side
-        // that actually faces the other node.
+        // source/target handles from the two nodes' relative grid positions AND
+        // the occupancy grid (see edgePorts.ts) so each end connects through the
+        // side that faces the other node without crossing an intervening card.
         const { sourceHandle, targetHandle } = pickEdgePorts(
           { lane: lanes.get(e.source) ?? 0, row: indexByOid.get(e.source) ?? 0 },
           { lane: lanes.get(e.target) ?? 0, row: indexByOid.get(e.target) ?? 0 },
+          isOccupied,
         );
 
         return {
@@ -853,14 +1149,16 @@ export default function CommitGraph({
           target: e.target,
           sourceHandle,
           targetHandle,
+          // Bezier curve routing (React Flow "default"). The port selection
+          // above keeps each end docking on the side facing the other node so
+          // the curve stays in the gutter between lanes rather than under a card.
           type: "default",
           style: { stroke: "#30363d", strokeWidth: 2 },
           markerEnd: { type: MarkerType.ArrowClosed, color: "#30363d" },
-        };
-      }),
+        } as Edge;
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [effEdges, lanes, indexByOid]
-  );
+  }, [effEdges, lanes, indexByOid]);
 
   // Dashed edges connecting pseudo-nodes to the commits they build on.
   const specialEdges: Edge[] = useMemo(() => {

@@ -58,6 +58,45 @@ explicit lane free/reuse + junction edges), not a foreign engine — but still a
 substantial rewrite of lane assignment. This replaces/absorbs work items A & B
 below; C, D, E still stand.
 
+## Implementation progress (update as work lands)
+
+- **DONE — leaf-seeded lane rewrite (absorbs A & B).** `assignLanes`
+  (`ui/src/features/graph/CommitGraph.tsx`) is the transit-map allocator: walk
+  newest→oldest, a commit hands its lane to its FIRST parent (run continues
+  straight down), non-first parents open their own lanes (junctions), converging
+  runs FREE their lane for reuse below (width tracks concurrent runs). A MERGE
+  simply lands in its P1's lane — no merge special-casing. The ONLY trunk logic
+  is: a single `trunkTip` id is pinned to lane 0 and lane 0 WINS on convergence
+  (so the mainline stays a straight left column through shared ancestors); no
+  trunk "membership" set, no fold-derived trunk detection (that earlier approach
+  caused a merge to flip lanes between collapsed/expanded and was removed).
+- **DONE — user-selectable trunk branch.** The lane-0 branch is chosen by the
+  user via a pin control in the existing branch panel (`BranchControl`), lifted
+  as `trunkBranch` state in `App.tsx` and passed to `CommitGraph`, which resolves
+  the branch NAME → tip oid (default main → master → HEAD → newest) → render id.
+- **DONE — height-aware, topology-based row layout (no overlap, no wasted gaps).**
+  `nodeLayout.ts`: `assignRows` gives each node a row = max(child row)+1 (a
+  parent hugs its lowest child), so lane 0 no longer leaves tall gaps opposite
+  unrelated side-lane stacks; `estimateNodeHeight` + `computeRowTops` make each
+  row's Y height-aware (row height = max card height across its lanes) with a
+  constant `ROW_GAP`, so tall cards never overlap. Pseudo-nodes align via a
+  `yForRow` resolver. All unit-tested (`nodeLayout.test.ts`).
+- **DONE — edge routing avoids running under nodes.** Edges are `smoothstep`
+  (orthogonal), and `pickEdgePorts` now takes an occupancy predicate: an edge
+  end uses a VERTICAL port only when its own column is clear between the two
+  rows, else the facing SIDE — so a line never passes behind a stacked card.
+- **TODO — D (server default branch), E (merge diff semantics)** still stand as
+  written below. C is now done (see next bullet).
+- **DONE — C (commits included in this merge).** New server endpoint
+  `GET /api/v1/commits/:oid/included` → `merge_included_commits`
+  (`server/src/git/commits.rs`): exact revwalk `push(secondary parents)` +
+  `hide(first parent)` = `reachable(mergedSide) \ reachable(base)`, newest-first,
+  empty for non-merges, window-independent. Client `api.commits.included` +
+  `IncludedCommit` type; `CommitPanel.tsx` shows a collapsible "Included N
+  commits" list under the merge line, each entry clickable to select that commit
+  (wired via a new `onSelectCommit` prop from `App.tsx`). Server tests cover
+  merged-in-only, shared-ancestor exclusion, non-merge empty, and not-found.
+
 ## Core mental model
 
 Git stores only the DAG skeleton: each commit is a snapshot + parent pointers.

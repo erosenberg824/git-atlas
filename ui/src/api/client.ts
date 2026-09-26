@@ -107,6 +107,21 @@ export interface CommitNode {
   author_email: string;
   timestamp: number;
   parents: string[];
+  /**
+   * For merge commits (>= 2 parents): one entry per SECONDARY parent, telling
+   * whether that side dead-ends at the merge (`integration` — foldable) or its
+   * line continues past it (`sync` — pulled in updates from a living branch, not
+   * foldable). Computed server-side against the full repo, so it is stable
+   * regardless of the loaded window. Absent/empty for non-merges.
+   */
+  merge_sides?: MergeSide[];
+}
+
+/** Topological classification of one secondary parent of a merge. */
+export interface MergeSide {
+  /** Index into `parents` (always >= 1). */
+  parent_index: number;
+  kind: "integration" | "sync";
 }
 
 export interface CommitEdge {
@@ -158,6 +173,15 @@ export interface CommitDetail {
   committer: Signature;
   parents: string[];
   tree_oid: string;
+}
+
+/** A commit brought in by a merge (a member of the merged-in side). */
+export interface IncludedCommit {
+  oid: string;
+  short_oid: string;
+  summary: string;
+  author_name: string;
+  timestamp: number;
 }
 
 export interface DiffLine {
@@ -302,6 +326,7 @@ export const api = {
   },
   commits: {
     get: (oid: string) => get<CommitDetail>(`/commits/${oid}`),
+    included: (oid: string) => get<IncludedCommit[]>(`/commits/${oid}/included`),
     containment: (oid: string) => get<ContainmentResponse>(`/commits/${oid}/containment`),
   },
   diff: {

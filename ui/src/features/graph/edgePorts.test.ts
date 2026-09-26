@@ -2,15 +2,22 @@ import { describe, it, expect } from "vitest";
 import { pickEdgePorts, type Cell } from "./edgePorts";
 
 /**
- * `pickEdgePorts` chooses bezier-edge ports with the two ends decided
- * independently:
- *   - TARGET: vertical port when SAME lane, else the facing SIDE (so a
- *     cross-lane edge clears the target's stacked mainline neighbour).
- *   - SOURCE: dominant axis of the vector (ties → vertical).
- * These tests pin the rule and the concrete graph cases it drives.
+ * `pickEdgePorts` chooses edge ports from the two nodes' grid positions AND an
+ * occupancy predicate:
+ *   - SAME lane → straight vertical (top/bottom).
+ *   - CROSS lane → each end leaves/enters VERTICALLY only when its own column is
+ *     clear between the two rows; otherwise through the facing SIDE, so a line
+ *     never runs behind a stacked card.
+ * Without a predicate it falls back to "immediate neighbour ⇒ clear".
  */
 
 const at = (lane: number, row: number): Cell => ({ lane, row });
+
+/** Occupancy predicate from a list of occupied cells. */
+const grid = (cells: [number, number][]) => {
+  const set = new Set(cells.map(([l, r]) => `${l},${r}`));
+  return (lane: number, row: number) => set.has(`${lane},${row}`);
+};
 
 describe("pickEdgePorts — same lane (straight vertical)", () => {
   it("target directly above → source top, target bottom", () => {
@@ -42,63 +49,84 @@ describe("pickEdgePorts — same lane (straight vertical)", () => {
   });
 });
 
-describe("pickEdgePorts — cross lane: target enters the facing side", () => {
-  it("branch tip far below-left of a merge → source climbs (top), target side", () => {
-    // 3de7379 (lane 4, row 28) → merge 0e571bb (lane 0, row 0). Vertical
-    // dominates for the SOURCE (|dRow|=28 > |dLane|=4) so it leaves the TOP and
-    // climbs its own lane; the TARGET is cross-lane so the edge enters the
-    // merge's RIGHT side (source is to the right), clearing the mainline commit
-    // stacked directly under the merge.
-    expect(pickEdgePorts(at(4, 28), at(0, 0))).toEqual({
+describe("pickEdgePorts — cross lane with occupancy", () => {
+  it("branch tip far below a merge, both columns blocked → both ends use facing sides", () => {
+    // Branch tip (lane 4, row 28) → merge (lane 0, row 0). The merge's own
+    // column (lane 0) is packed by the mainline below it, and the tip's column
+    // (lane 4) has its own branch below — so BOTH ends route through the facing
+    // side: source leaves its LEFT (target is to the left), target entered on
+    // its RIGHT (source is to the right).
+    const occ = grid([
+      [0, 10], // mainline card under the merge, blocking lane 0
+      [4, 20], // a branch card under the tip, blocking lane 4
+    ]);
+    expect(pickEdgePorts(at(4, 28), at(0, 0), occ)).toEqual({
+      sourceHandle: "s-left",
+      targetHandle: "t-right",
+    });
+  });
+
+  it("source column clear → source leaves vertically and climbs its lane", () => {
+    // Nothing between the tip and the top in the tip's own lane (4), so it can
+    // climb: source leaves the TOP. The target's column (0) is blocked, so the
+    // target is entered on its RIGHT (facing the source).
+    const occ = grid([[0, 5]]); // only the target column is blocked
+    expect(pickEdgePorts(at(4, 28), at(0, 0), occ)).toEqual({
       sourceHandle: "s-top",
       targetHandle: "t-right",
     });
   });
 
-  it("fork to a first branch commit one row up several lanes over → side/bottom", () => {
-    // 9f89d2e (lane 0, row 30) → 6c18fa6 (lane 4, row 29). Diagonally adjacent
-    // (one row up), so the branch's first commit is entered at its BOTTOM (grows
-    // up out of the fork — the bottom of the loop). Source: horizontal dominates
-    // (|dLane|=4 > |dRow|=1) → leaves the RIGHT toward the branch.
-    expect(pickEdgePorts(at(0, 30), at(4, 29))).toEqual({
+  it("target column clear → target entered vertically at its bottom", () => {
+    // Fork (lane 0) to a branch's first commit (lane 4) one row up. The branch's
+    // column above the fork is empty, so the target is entered at its BOTTOM
+    // ("grows up out of the fork"). The source's column is also clear between
+    // the two rows (the [0,31] card is BELOW the fork, outside the span), so the
+    // source leaves through its TOP.
+    const occ = grid([[0, 31]]); // a card below the fork in lane 0
+    expect(pickEdgePorts(at(0, 30), at(4, 29), occ)).toEqual({
+      sourceHandle: "s-top",
+      targetHandle: "t-bottom",
+    });
+  });
+
+  it("source column blocked → source leaves through the facing side", () => {
+    // A card sits in the SOURCE's column (lane 0) BETWEEN the two rows, so the
+    // source can't climb vertically — it leaves through the facing (right) side
+    // toward the target. The target column (4) is clear → entered vertically.
+    const occ = grid([[0, 10]]);
+    expect(pickEdgePorts(at(0, 30), at(4, 0), occ)).toEqual({
       sourceHandle: "s-right",
       targetHandle: "t-bottom",
     });
   });
 
-  it("diagonally-adjacent target to the LEFT → enters its bottom too", () => {
-    expect(pickEdgePorts(at(4, 10), at(1, 9))).toEqual({
-      sourceHandle: "s-left",
-      targetHandle: "t-bottom",
-    });
-  });
-
-  it("target to the LEFT and far above → source top, target right", () => {
-    expect(pickEdgePorts(at(5, 20), at(1, 0))).toEqual({
-      sourceHandle: "s-top",
-      targetHandle: "t-right",
-    });
-  });
-
-  it("target to the RIGHT and far above → source top, target left", () => {
-    expect(pickEdgePorts(at(1, 20), at(5, 0))).toEqual({
-      sourceHandle: "s-top",
-      targetHandle: "t-left",
+  it("both columns clear → straight vertical exits on both ends", () => {
+    // No occupied cells at all → both columns clear → both ends vertical.
+    const occ = grid([]);
+    expect(pickEdgePorts(at(0, 30), at(4, 0), occ)).toEqual({
+      sourceHandle: "s-top", // target above → climb out the top
+      targetHandle: "t-bottom", // source below → enter target's bottom
     });
   });
 });
 
-describe("pickEdgePorts — symmetry of the side choice", () => {
-  it("mirrors target side when the lane delta flips sign (far above)", () => {
-    // Far above (vert > 1) so the target uses a SIDE; source climbs (vertical
-    // dominant) out its top.
-    expect(pickEdgePorts(at(1, 20), at(5, 0))).toEqual({
+describe("pickEdgePorts — fallback (no occupancy predicate)", () => {
+  it("diagonally adjacent is treated as clear (both ends vertical)", () => {
+    // dRow = 29-30 = -1 (target above). Fallback treats a one-row gap as clear,
+    // so both ends are vertical: source out the top, target in the bottom.
+    expect(pickEdgePorts(at(0, 30), at(4, 29))).toEqual({
       sourceHandle: "s-top",
-      targetHandle: "t-left",
+      targetHandle: "t-bottom",
     });
-    expect(pickEdgePorts(at(5, 20), at(1, 0))).toEqual({
-      sourceHandle: "s-top",
-      targetHandle: "t-right",
+  });
+
+  it("far apart cross-lane falls back to facing sides on both ends", () => {
+    // dRow = -20 (far). Fallback: neither column clear → both ends use the
+    // facing side. Target to the RIGHT → source leaves right, target entered left.
+    expect(pickEdgePorts(at(1, 20), at(5, 0))).toEqual({
+      sourceHandle: "s-right",
+      targetHandle: "t-left",
     });
   });
 });
